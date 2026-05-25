@@ -1,0 +1,30 @@
+# systemd --user unit for the Aether host agent.
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp aether-agent.service ~/.config/systemd/user/
+#   # edit the token below to match the backend's AETHER_HOST_AGENT_TOKEN
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now aether-agent
+#
+# A --user unit runs inside your graphical login session, so the agent inherits
+# DISPLAY / WAYLAND_DISPLAY / DBUS_SESSION_BUS_ADDRESS / XDG_RUNTIME_DIR and can
+# drive the desktop and audio. Adjust WorkingDirectory to where you cloned this.
+
+[Unit]
+Description=Aether host agent (executes commands and plays audio on the host)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Projects/aether/host-agent
+Environment=AETHER_HOST_AGENT_TOKEN=please-change-this-shared-secret
+Environment=AETHER_AGENT_HOST=0.0.0.0
+Environment=AETHER_AGENT_PORT=8765
+ExecStart=/usr/bin/python3 agent.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target

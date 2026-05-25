@@ -1,0 +1,62 @@
+# Aether — Dockerized backend. The host agent runs natively on the host; the LLM is
+# DeepSeek's cloud API. The backend publishes one port (8000) for the web UI + API, and
+# is backed by Postgres (persistent history/favourites/preferences) and Redis (follow-up
+# context, caching, live notification fan-out). Both are optional from the app's point of
+# view — if they're down the backend degrades gracefully — but compose starts them anyway.
+services:
+  backend:
+    build: ./backend
+    container_name: aether-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"          # web UI + API, reachable from other devices on the LAN
+    env_file:
+      - .env
+    environment:
+      # Point the app at the sibling services (override in .env if you must).
+      AETHER_DATABASE_URL: ${AETHER_DATABASE_URL:-postgresql://aether:${POSTGRES_PASSWORD:-aether}@db:5432/aether}
+      AETHER_REDIS_URL: ${AETHER_REDIS_URL:-redis://redis:6379/0}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - aether-models:/models       # caches Whisper + Kokoro models across restarts
+      - ./backend/web:/app/web:ro   # serve the web client live (edit → refresh, no rebuild)
+    extra_hosts:
+      # Lets the container reach the host agent (8765) on the host.
+      - "host.docker.internal:host-gateway"
+
+  db:
+    image: postgres:16-alpine
+    container_name: aether-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aether
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aether}
+      POSTGRES_DB: aether
+    volumes:
+      - aether-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aether -d aether"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: aether-redis
+    restart: unless-stopped
+    # Small footprint on a 2-core box: cap memory and evict the least-recently-used keys
+    # (context/cache are disposable; nothing here must survive memory pressure).
+    command: ["redis-server", "--save", "", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  aether-models:
+  aether-db:

@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.pyc
+*.wav
+.DS_Store
+models/
+
+# host agent runtime + browser venv (created by scripts)
+host-agent/.venv/
+host-agent/*.pid
+host-agent/*.log
+host-agent/notifications.jsonl
+host-agent/youtube.cmd
+host-agent/youtube.state

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Aether</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="aurora"><span></span><span></span><span></span></div>
+
+  <!-- ░░ Login ░░ -->
+  <div id="login" class="screen center">
+    <form id="login-form" class="card glass">
+      <div class="logo">◈</div>
+      <h1>Aether</h1>
+      <p class="sub">Your voice, in command.</p>
+      <label class="field"><input id="username" placeholder="Username" autocomplete="username" /></label>
+      <label class="field"><input id="password" type="password" placeholder="Password" autocomplete="current-password" /></label>
+      <button type="submit" class="btn-primary">Sign in</button>
+      <p id="login-error" class="error"></p>
+    </form>
+  </div>
+
+  <!-- ░░ App ░░ -->
+  <div id="app" class="screen hidden">
+    <header class="topbar">
+      <span class="brand"><span class="brand-mark">◈</span> Aether</span>
+      <span class="spacer"></span>
+      <span id="conn" class="status-pill"><i></i><em>connecting</em></span>
+      <button id="history-btn" class="icon-btn" title="History" aria-label="History">⟲</button>
+      <button id="logout" class="icon-btn" title="Sign out" aria-label="Sign out">⏻</button>
+    </header>
+
+    <main class="stage">
+      <p id="reply" class="reply">Hi — tap the orb and tell me what to do.</p>
+
+      <div class="orb-wrap">
+        <div class="orb-rings"><span></span><span></span><span></span></div>
+        <button id="orb" class="orb" aria-label="Press to talk">
+          <span class="orb-glow"></span>
+          <span class="orb-glass"></span>
+          <span id="orb-icon" class="orb-icon">
+            <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/>
+            </svg>
+          </span>
+        </button>
+      </div>
+
+      <p id="phase" class="phase">Tap to speak · hold to talk</p>
+
+      <div id="rec-actions" class="rec-actions hidden">
+        <button id="rec-cancel" class="btn-soft">Cancel</button>
+        <button id="rec-send" class="btn-primary">Send ↑</button>
+      </div>
+
+      <div id="hint" class="hint">
+        <button class="chip">how many windows are open</button>
+        <button class="chip">do I have a project running</button>
+        <button class="chip">turn off bluetooth</button>
+        <button class="chip">what song is playing</button>
+        <button class="chip">lock the screen</button>
+      </div>
+    </main>
+
+    <footer class="composer glass">
+      <input id="text" placeholder="Type a command…" />
+      <button id="send" class="icon-btn send-btn" aria-label="Send">➤</button>
+    </footer>
+  </div>
+
+  <!-- ░░ Mic permission sheet ░░ -->
+  <div id="mic-sheet" class="overlay hidden">
+    <div class="sheet glass">
+      <div class="sheet-icon">🎙️</div>
+      <h2 id="mic-title">Enable your microphone</h2>
+      <p id="mic-msg" class="sub">Aether needs microphone access so you can talk to it. Your audio is sent only to your own server for transcription.</p>
+      <div class="sheet-actions">
+        <button id="mic-dismiss" class="btn-soft">Not now</button>
+        <button id="mic-allow" class="btn-primary">Allow microphone</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ░░ Approval overlay ░░ -->
+  <div id="approve" class="overlay hidden">
+    <div class="sheet glass approve">
+      <div class="approve-head"><span class="shield">🛡️</span> Approval needed
+        <span id="approve-badge" class="badge hidden">ROOT</span></div>
+      <p id="approve-reason" class="sub"></p>
+      <code id="approve-cmd"></code>
+      <div class="sheet-actions">
+        <button id="approve-no" class="btn-soft">Cancel</button>
+        <button id="approve-yes" class="btn-danger">Approve &amp; run</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ░░ Choice overlay (Aether asks when genuinely unsure) ░░ -->
+  <div id="choice" class="overlay hidden">
+    <div class="sheet glass">
+      <div class="sheet-icon">🤔</div>
+      <h2 id="choice-q"></h2>
+      <div id="choice-options" class="choice-options"></div>
+      <div class="sheet-actions">
+        <button id="choice-cancel" class="btn-soft">Never mind</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ░░ History drawer ░░ -->
+  <aside id="history" class="drawer glass hidden">
+    <div class="drawer-head"><span>History</span><button id="history-close" class="icon-btn">✕</button></div>
+    <div id="history-list" class="drawer-body"></div>
+  </aside>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
