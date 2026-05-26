@@ -1,7 +1,7 @@
 """Runtime configuration, loaded from environment variables / .env."""
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     # tell the model where the user's files live.
     music_dir: str = "~/Music"
     projects_dir: str = "~/Projects"
+    # IANA timezone (e.g. "Africa/Dar_es_Salaam") used to ground the model's sense of the
+    # current date/time. Empty -> the backend's local zone. Reads AETHER_TZ or plain TZ.
+    timezone: str = Field(default="", validation_alias=AliasChoices("AETHER_TZ", "TZ"))
 
     # --- Host agent (runs natively on the host: executes commands, plays audio) ---
     host_agent_url: str = "http://host.docker.internal:8765"

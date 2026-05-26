@@ -49,6 +49,15 @@ JS_STATE = """() => {
 _pw = None
 _browser = None
 _chrome = None
+_ctx = None  # the CDP browser context; used to (re)acquire a working page on demand
+# Outcome of the most recent play (initial launch or a play_query command). Published into
+# STATE_FILE under "play" so the skill can CONFIRM a video actually loaded — and read back the
+# real title now on screen — instead of assuming a queued command succeeded. Shape:
+#   {"req": <id|"init">, "query": <str>, "ok": <bool>, "title": <str>, "ts": <float>}
+_play_result: dict | None = None
+
+# Title of the playing video, stripped of YouTube's suffix — used to confirm what's on screen.
+JS_TITLE = "() => (document.title || '').replace(/\\s*-\\s*YouTube\\s*$/, '').trim()"
 
 
 def _shutdown(*_):
@@ -119,6 +128,66 @@ def _launch_chrome(port: int, start_url: str) -> subprocess.Popen:
     )
 
 
+def _get_page():
+    """Return a usable page in the live Chrome — reusing an open tab, or opening one. This is
+    what lets a new play swap the video in the SAME browser instead of relaunching Chrome."""
+    global _ctx
+    if _ctx is None:
+        return None
+    try:
+        open_pages = [p for p in _ctx.pages if not p.is_closed()]
+    except Exception:  # noqa: BLE001 - context tearing down
+        return None
+    if open_pages:
+        return open_pages[0]
+    try:
+        return _ctx.new_page()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _search_and_play(query: str) -> bool:
+    """Search YouTube for `query` in the existing page and play the first result. Reused for
+    both the initial play and every subsequent 'play something else' on the same session."""
+    query = (query or "").strip()
+    if not query:
+        return False
+    page = _get_page()
+    if page is None:
+        return False
+    target = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
+    cur = page.url or ""
+    # Skip the navigation if we're already on this exact search (e.g. Chrome opened it on
+    # launch); otherwise navigate the existing tab to the new search.
+    if "youtube.com/results" not in cur or quote_plus(query) not in cur:
+        page.goto(target, wait_until="domcontentloaded", timeout=30_000)
+    _dismiss_consent(page)
+    page.wait_for_selector(
+        "ytd-video-renderer a#video-title, a#video-title-link",
+        state="visible", timeout=20_000)
+    for selector in (
+        "ytd-video-renderer a#video-title",
+        "a#video-title-link",
+        "ytd-video-renderer a#thumbnail",
+    ):
+        try:
+            page.locator(selector).first.click(timeout=10_000)
+            break
+        except Exception:
+            continue
+    else:
+        print("Could not click a search result", flush=True)
+        return False
+    try:
+        page.wait_for_selector("video", state="visible", timeout=30_000)
+    except Exception as e:  # noqa: BLE001
+        print(f"Video did not load: {e}", flush=True)
+        return False
+    _dismiss_consent(page)
+    print(f"Playing: {query}", flush=True)
+    return True
+
+
 def _dismiss_consent(page, max_tries=3):
     for _ in range(max_tries):
         for label in ("Accept all", "I agree", "Reject all", "Accept the use of cookies"):
@@ -131,6 +200,38 @@ def _dismiss_consent(page, max_tries=3):
             except Exception:
                 continue
         page.wait_for_timeout(800)
+
+
+def _play(query: str, req: str) -> bool:
+    """Search and play `query`, then record the REAL outcome (success + the title now on
+    screen) in `_play_result` for the skill to read back. This is what lets play_youtube
+    confirm a video actually started instead of assuming a queued command worked. Never
+    raises — a failed search is recorded as ok:false, not a silent no-op."""
+    global _play_result
+    title = ""
+    try:
+        played = _search_and_play(query)
+    except Exception as e:  # noqa: BLE001 - record the failure rather than crash the loop
+        print(f"play failed for {query!r}: {e}", flush=True)
+        played = False
+    if played:
+        page = _get_page()
+        if page is not None:
+            # The tab title can lag the navigation (still the results page) for a beat on a
+            # slow box — poll briefly so we report the actual VIDEO title, not a stale one.
+            for _ in range(12):
+                try:
+                    cand = (page.evaluate(JS_TITLE) or "").strip()
+                except Exception:  # noqa: BLE001
+                    cand = ""
+                if cand and cand.lower() not in ("youtube", query.strip().lower()):
+                    title = cand
+                    break
+                title = cand or title
+                time.sleep(0.25)
+    _play_result = {"req": req, "query": query, "ok": bool(played),
+                    "title": title, "ts": time.time()}
+    return bool(played)
 
 
 def _apply(page, cmd: dict) -> None:
@@ -158,6 +259,31 @@ def _apply(page, cmd: dict) -> None:
             page.locator(".ytp-next-button").first.click(timeout=3000)
         except Exception:
             pass
+    elif action in ("play_query", "search"):
+        # Play something new in the SAME Chrome session — no relaunch. Record the outcome
+        # (under the command's req) so the skill can confirm it actually started.
+        _play(str(cmd.get("query") or ""), str(cmd.get("req") or ""))
+    elif action in ("fullscreen", "fullscreen_on", "fullscreen_off"):
+        # Toggle YouTube's OWN fullscreen via the player — no OS input simulation, so it
+        # never triggers the KDE "remote control" portal popup. Click the player's
+        # fullscreen button (its aria-pressed tells us the current state so we can honour
+        # an explicit on/off); fall back to the player keyboard shortcut inside the page.
+        want = {"fullscreen_on": True, "fullscreen_off": False}.get(action)
+        try:
+            btn = page.locator(".ytp-fullscreen-button").first
+            is_full = False
+            try:
+                is_full = (btn.get_attribute("aria-pressed", timeout=1000) == "true")
+            except Exception:
+                is_full = bool(page.evaluate("() => !!document.fullscreenElement"))
+            if want is None or want != is_full:
+                btn.click(timeout=3000)
+        except Exception:
+            try:  # last resort: dispatch the player's own 'f' shortcut within the page
+                page.locator("video").first.focus(timeout=1000)
+                page.keyboard.press("f")
+            except Exception:
+                pass
 
 
 def _drain_commands(page) -> None:
@@ -187,6 +313,8 @@ def _publish_state(page) -> None:
         state = page.evaluate(JS_STATE)
     except Exception:  # noqa: BLE001 - page navigating/closing
         return
+    if _play_result is not None:  # let the skill confirm the last play and read its real title
+        state["play"] = _play_result
     tmp = STATE_FILE + ".tmp"
     try:
         with open(tmp, "w") as f:
@@ -197,7 +325,7 @@ def _publish_state(page) -> None:
 
 
 def main() -> None:
-    global _pw, _browser, _chrome
+    global _pw, _browser, _chrome, _ctx
     query = " ".join(sys.argv[1:]).strip() or "music"
     for stale in (CMD_FILE, STATE_FILE):  # don't report a previous play's state
         try:
@@ -216,62 +344,34 @@ def main() -> None:
 
     _pw = sync_playwright().start()
     _browser = _pw.chromium.connect_over_cdp(endpoint)
-    ctx = _browser.contexts[0] if _browser.contexts else _browser.new_context()
+    _ctx = _browser.contexts[0] if _browser.contexts else _browser.new_context()
 
-    # Chrome opened start_url already; grab that page (or any page, or make one).
+    # Wait for Chrome's initial tab to exist, then play the first query in it, recording the
+    # outcome under req "init" so the skill can confirm it. We do NOT exit on a failed first
+    # search: the Chrome session stays up so the skill can report the failure honestly and the
+    # agent can retry a cleaner query into the SAME browser.
     deadline = time.time() + 10
-    page = None
-    while time.time() < deadline:
-        if ctx.pages:
-            page = ctx.pages[0]
-            break
+    while time.time() < deadline and not _get_page():
         time.sleep(0.2)
-    if page is None:
-        page = ctx.new_page()
+    _play(query, "init")
 
-    # Make sure we're on the search results (in case the opened tab was about:blank).
-    if "youtube.com/results" not in (page.url or ""):
-        page.goto(search_url, wait_until="domcontentloaded", timeout=30_000)
-
-    _dismiss_consent(page)
-
-    # Click the first video result.
-    page.wait_for_selector(
-        "ytd-video-renderer a#video-title, a#video-title-link",
-        state="visible",
-        timeout=20_000,
-    )
-    clicked = False
-    for selector in (
-        "ytd-video-renderer a#video-title",
-        "a#video-title-link",
-        "ytd-video-renderer a#thumbnail",
-    ):
-        try:
-            page.locator(selector).first.click(timeout=10_000)
-            clicked = True
-            break
-        except Exception:
-            continue
-    if not clicked:
-        print("Could not click a search result", flush=True)
-        sys.exit(1)
-
-    # Wait for the watch-page video element to appear.
-    try:
-        page.wait_for_selector("video", state="visible", timeout=30_000)
-        print("Video loaded — playing.", flush=True)
-    except Exception as e:  # noqa: BLE001
-        print(f"Video did not load: {e}", flush=True)
-        sys.exit(1)
-
-    _dismiss_consent(page)
-
-    # Keep the process (and thus Chrome) alive until stopped, servicing control commands
-    # (volume / pause / seek / next) and publishing playback state for status queries.
+    # Keep the process (and thus Chrome) alive until stopped, servicing control commands —
+    # volume / pause / seek / next / fullscreen, and play_query to swap in a NEW video on the
+    # same session — and publishing playback state for status queries. The page is re-acquired
+    # each tick so the loop survives navigations and a closed/reopened tab.
     while True:
-        _drain_commands(page)
-        _publish_state(page)
+        # If Chrome is gone — the user closed the window, or it crashed (its child goes
+        # <defunct>) — exit instead of lingering. A worker that outlives its browser still
+        # looks "alive" to the skill (the pid exists), so it would silently swallow every new
+        # play_query forever, never confirming and never dying. Shutting down here lets the
+        # next play_youtube start a clean, fresh session.
+        if _chrome.poll() is not None or not _browser.is_connected():
+            print("Chrome is gone; shutting down worker.", flush=True)
+            _shutdown()
+        page = _get_page()
+        if page is not None:
+            _drain_commands(page)
+            _publish_state(page)
         time.sleep(0.5)
 
 

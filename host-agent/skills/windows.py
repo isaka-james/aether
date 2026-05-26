@@ -6,8 +6,8 @@ XWayland-only and best-effort.
 """
 from __future__ import annotations
 
-from . import kwin
-from ._util import fail, need_tool, ok, run
+from . import _input, kwin
+from ._util import fail, ok
 from .registry import skill
 
 _label = kwin.label
@@ -49,39 +49,33 @@ def focus_window(params):
     return ok(f"Switched to '{title}'.", matched=n) if n else fail(f"No window matched '{title}'.")
 
 
+# Tab/keystroke skills inject input. They go through _input, which prefers ydotool (kernel
+# uinput — no desktop "remote control" portal prompt) and falls back to xdotool.
 @skill("close_tab")
 def close_tab(_):
-    if (miss := need_tool("xdotool", "Closing a tab")):
-        return miss
-    rc, _, err = run(["xdotool", "getactivewindow", "key", "--clearmodifiers", "ctrl+w"])
-    return ok("Closed the current tab.") if rc == 0 else fail("Couldn't close the tab.", error=err)
+    okk, err = _input.send_keys("ctrl+w")
+    return ok("Closed the current tab.") if okk else fail("Couldn't close the tab.", error=err)
 
 
 @skill("new_tab")
 def new_tab(_):
-    if (miss := need_tool("xdotool", "Opening a tab")):
-        return miss
-    rc, _, err = run(["xdotool", "getactivewindow", "key", "--clearmodifiers", "ctrl+t"])
-    return ok("Opened a new tab.") if rc == 0 else fail("Couldn't open a tab.", error=err)
+    okk, err = _input.send_keys("ctrl+t")
+    return ok("Opened a new tab.") if okk else fail("Couldn't open a tab.", error=err)
 
 
 @skill("press_keys")
 def press_keys(params):
-    if (miss := need_tool("xdotool", "Pressing keys")):
-        return miss
     keys = str(params.get("keys", "")).strip()
     if not keys:
         return fail("Which keys should I press?")
-    rc, _, err = run(["xdotool", "key", "--clearmodifiers", "--", keys])
-    return ok(f"Pressed {keys}.", keys=keys) if rc == 0 else fail("Couldn't send those keys.", error=err)
+    okk, err = _input.send_keys(keys)
+    return ok(f"Pressed {keys}.", keys=keys) if okk else fail("Couldn't send those keys.", error=err)
 
 
 @skill("type_text")
 def type_text(params):
-    if (miss := need_tool("xdotool", "Typing text")):
-        return miss
     text = str(params.get("text", ""))
     if not text:
         return fail("What should I type?")
-    rc, _, err = run(["xdotool", "type", "--clearmodifiers", "--", text])
-    return ok("Typed it.") if rc == 0 else fail("Couldn't type that.", error=err)
+    okk, err = _input.type_text(text)
+    return ok("Typed it.") if okk else fail("Couldn't type that.", error=err)

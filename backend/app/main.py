@@ -6,7 +6,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import (Depends, FastAPI, File, Form, HTTPException, UploadFile,
+from fastapi import (Depends, FastAPI, File, HTTPException, UploadFile,
                      WebSocket, WebSocketDisconnect, status)
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -102,8 +102,7 @@ async def login(body: LoginRequest):
 @app.post("/api/command/text", response_model=CommandResult)
 async def command_text(body: TextCommand, user: str = Depends(require_user)):
     await _progress("received", "Received by Aether")
-    result = await orchestrator.handle(body.text, transcript=body.text,
-                                       confirmed=body.confirmed, clarify=body.clarify,
+    result = await orchestrator.handle(body.text, transcript=body.text, clarify=body.clarify,
                                        session=user, on_progress=_progress)
     await _notify(result)
     return result
@@ -123,7 +122,6 @@ async def command_approve(body: ApproveCommand, user: str = Depends(require_user
 @app.post("/api/command/voice", response_model=CommandResult)
 async def command_voice(
     audio: UploadFile = File(...),
-    confirmed: bool = Form(False),
     user: str = Depends(require_user),
 ):
     raw = await audio.read()
@@ -132,17 +130,43 @@ async def command_voice(
     await _progress("transcribing", "Transcribing your voice…")
     try:
         transcript = await asyncio.to_thread(stt.transcribe, raw, suffix)
-    except Exception as e:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         log.exception("transcription failed")
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Transcription failed: {e}")
+        # Speak the failure on the host rather than returning a silent 400.
+        result = await orchestrator.speak(
+            "My apologies — I couldn't make out the audio just now. Do try again.",
+            on_progress=_progress)
+        await _notify(result)
+        return result
 
     if not transcript:
-        return CommandResult(ok=False, status="error", summary="I couldn't make out any speech.")
+        result = await orchestrator.speak(
+            "I'm afraid I couldn't make out any speech there.", on_progress=_progress)
+        await _notify(result)
+        return result
 
     result = await orchestrator.handle(transcript, transcript=transcript,
-                                       confirmed=confirmed, session=user, on_progress=_progress)
+                                       session=user, on_progress=_progress)
     await _notify(result)
     return result
+
+
+# Shown as suggestion chips before any history exists (or if the DB is off).
+_DEFAULT_SUGGESTIONS = [
+    "play nataka kulewa", "what's the weather", "brief me on the news",
+    "make the video full screen", "how many windows are open", "lock the screen",
+]
+
+
+@app.get("/api/suggestions")
+async def suggestions(user: str = Depends(require_user)):
+    """The user's most-asked requests, for the web client's quick chips. Falls back to a
+    sensible default set when there's no history yet (or persistence is disabled)."""
+    items = await db.top_requests(limit=6, session=user)
+    if len(items) < 3:  # not enough real history — pad/replace with defaults
+        seen = {i.lower() for i in items}
+        items += [d for d in _DEFAULT_SUGGESTIONS if d.lower() not in seen]
+    return {"suggestions": items[:6]}
 
 
 @app.get("/api/health")

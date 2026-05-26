@@ -155,6 +155,7 @@ function renderResult(res) {
   if (res.transcript) addHistory("user", res.transcript);
   addHistory("bot", res.summary || "(no response)", res);
   setReply(res.summary || "Done.");
+  maybeSpeak(res);
   if (res.status === "needs_choice") {
     state.choice = { question: res.question, transcript: res.transcript };
     $("choice-q").textContent = res.question || "Which one?";
@@ -177,7 +178,20 @@ function renderResult(res) {
     $("approve-cmd").textContent = (res.params && res.params.command) || res.summary;
     $("approve").classList.remove("hidden");
     setMode("idle");
+    return;
   }
+  if (res.status === "done") loadSuggestions();  // keep the "most-asked" chips current
+}
+
+// The host plays Aether's own voice; res.spoken says whether that succeeded. If it didn't
+// (host audio down or speaking disabled), speak the reply in the browser so a response is
+// never delivered silently. Gated on !res.spoken so we never talk over the host voice.
+function maybeSpeak(res) {
+  if (res.spoken || !res.summary || !("speechSynthesis" in window)) return;
+  try {
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(res.summary));
+  } catch (e) { console.warn("browser speech failed:", e); }
 }
 
 // ───────── history ─────────
@@ -242,7 +256,25 @@ $("approve-no").addEventListener("click", () => { $("approve").classList.add("hi
 $("choice-cancel").addEventListener("click", () => { $("choice").classList.add("hidden"); state.choice = null; setReply("Okay, never mind."); });
 $("send").addEventListener("click", () => { const t = $("text").value; $("text").value = ""; submitText(t); });
 $("text").addEventListener("keydown", (e) => { if (e.key === "Enter") { const t = $("text").value; $("text").value = ""; submitText(t); } });
-document.querySelectorAll(".chip").forEach((c) => c.addEventListener("click", () => submitText(c.textContent)));
+// Suggestion chips: clicking one sends it (event delegation, so dynamically-loaded chips work).
+$("hint").addEventListener("click", (e) => { const c = e.target.closest(".chip"); if (c) submitText(c.textContent); });
+
+// Populate the chips with the user's most-asked requests (falls back to defaults server-side).
+async function loadSuggestions() {
+  try {
+    const r = await fetch("/api/suggestions", { headers: authH() });
+    if (!r.ok) return;
+    const { suggestions } = await r.json();
+    if (!Array.isArray(suggestions) || !suggestions.length) return;
+    const hint = $("hint");
+    hint.innerHTML = "";
+    suggestions.forEach((s) => {
+      const b = document.createElement("button");
+      b.className = "chip"; b.textContent = s;
+      hint.appendChild(b);
+    });
+  } catch (e) { console.warn("suggestions load failed:", e); }
+}
 $("logout").addEventListener("click", logout);
 $("history-btn").addEventListener("click", () => $("history").classList.remove("hidden"));
 $("history-close").addEventListener("click", () => $("history").classList.add("hidden"));
@@ -254,7 +286,7 @@ $("login-form").addEventListener("submit", async (e) => {
 
 function showApp() {
   $("login").classList.add("hidden"); $("app").classList.remove("hidden");
-  setMode("idle"); connectWs();
+  setMode("idle"); connectWs(); loadSuggestions();
   micState().then((s) => { if (s === "granted") state.micGranted = true; });
 }
 if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();

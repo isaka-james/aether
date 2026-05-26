@@ -18,6 +18,7 @@ from . import (  # noqa: E402,F401
     projects,
     shell,
     system,
+    weather,
     windows,
 )
 

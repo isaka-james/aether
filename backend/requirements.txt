@@ -13,3 +13,4 @@ pydantic==2.10.4
 pydantic-settings==2.7.1
 asyncpg==0.30.0
 redis==5.2.1
+tzdata==2024.2          # zoneinfo database (slim image has no OS tzdata) for AETHER_TZ

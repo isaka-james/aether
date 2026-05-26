@@ -22,7 +22,6 @@ class Clarification(BaseModel):
 
 class TextCommand(BaseModel):
     text: str
-    confirmed: bool = False  # set True to approve a medium-risk action
     clarify: Optional[Clarification] = None  # set when answering a needs_choice question
 
 
@@ -37,7 +36,6 @@ class Action(BaseModel):
     """A structured action chosen by the LLM."""
     skill: str
     params: dict[str, Any] = {}
-    speak: Optional[str] = None  # optional natural-language reply from the model
 
 
 class CommandResult(BaseModel):

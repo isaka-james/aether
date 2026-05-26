@@ -17,6 +17,7 @@ An optional on_progress(step, label) async callback drives the web client's phas
 import json
 import logging
 import re
+from datetime import datetime
 from typing import Any, Awaitable, Callable, Optional
 
 from . import cache, db, host_client, llm, news, tts
@@ -34,24 +35,96 @@ log = logging.getLogger("aether.orchestrator")
 
 Progress = Optional[Callable[[str, str], Awaitable[None]]]
 _SUDO = re.compile(r"\bsudo\b")
-MAX_STEPS = 6
-OBS_LIMIT = 1400
+# A capable cloud model (DeepSeek) drives the loop, so give it room to investigate state,
+# resolve a conflict, act, and verify — a smart multi-step chain shouldn't get truncated.
+MAX_STEPS = 9
+OBS_LIMIT = 4000  # generous enough that a full multi-layer news briefing isn't chopped mid-JSON
+# Voiced when the model returns nothing usable — better a graceful line than silence.
+FALLBACK_REPLY = "I'm afraid I've come up short on that one, sir."
 
 AGENT_SYSTEM = """You are Aether, a capable assistant that controls a Linux KDE computer.
+
+Right now it is {context}. Treat this as ground truth for anything time- or date-related
+(what day it is, "this morning/tonight", "today's" news, how long until something) — never
+guess the date, and tailor greetings and phrasing to the actual time of day.
+
 Reach the user's goal by calling tools — ONE per turn. Each turn output ONE JSON object:
-  • {"tool":"<name>","params":{...}}   to run a tool
+  • {"thought":"<brief private reasoning / plan>", "tool":"<name>","params":{...}}   to run a tool
   • {"choice":{"question":"<short question>","options":["A","B","C"]}}   to ask the user
   • {"final":"<spoken answer>"}         when you are done
+The "thought" is optional, never spoken, and may accompany a tool call: use it to plan.
+A "choice" MUST carry 2–4 concrete, distinct options — never an empty list and never a
+bare question. If you have no real options to offer, do NOT ask: act instead.
 
 After each tool call you get an OBSERVATION with its result; use it to decide the next
 step. You may chain several tools. Investigate with read-only tools before answering.
 
-Prefer acting over asking. Use "choice" ONLY at a genuine fork you cannot resolve from
-context — a real ambiguity (e.g. several apps named "studio" are installed, or the user
-said "play something" with no library hint and your list returned distinct moods). Give
-2–4 concrete options. Do NOT ask for trivia or to confirm the obvious.
+Plan before you act on anything non-trivial. On the first turn of a multi-step request,
+use "thought" to lay out the steps you'll take and what you need to find out; then work the
+plan one tool at a time, revising as observations come in. For a simple, unambiguous request,
+skip the ceremony and just do it.
 
-Recipes:
+You are a real agent and you are trusted — act on your own initiative; don't stall, don't
+hand back half-done work, and never reply with nothing. Prefer acting over asking. Use
+"choice" ONLY at a genuine fork you cannot resolve from context — a real ambiguity (e.g.
+several apps named "studio" are installed). Give 2–4 concrete options. Do NOT ask for trivia
+or to confirm the obvious. (The ONE exception where the user is asked to approve before
+something runs is a risky or root/sudo shell command: just issue it via run_command — the
+system routes it to the user for one tap of approval automatically. You never need to ask
+"shall I?" yourself for that; issue the command and it gets handled.)
+
+Be genuinely intelligent — anticipate and handle the whole situation, don't just react to
+the literal words. These principles apply to EVERY skill, not only the examples below:
+- Read the state before you act when an action could collide with what's already happening.
+  (Playing a new thing on YouTube does NOT collide — play_youtube swaps the new video into the
+  same Chrome, so just call it; no need to stop first. The collision to avoid is local music
+  left running: if play_music is going and you're about to start something else, stop_playback
+  first.) Before launching an app, check is_running / running_apps and just focus_window it if
+  it's already open instead of spawning a duplicate. Before setting a level, knowing the
+  current one lets you make a sensible change rather than a jarring jump.
+- Fulfil the whole goal in one loop. If doing it properly takes two or three steps —
+  quiet the current track → play the new one; find the window → focus it → act in it;
+  recall a saved preference → apply it — chain those tools yourself and finish the job.
+  Never hand back a half-done task or narrate "I will now…"; just do it.
+- Route the action to the right target by context. "Turn it down / it's too loud" while a
+  YouTube video is playing → youtube_volume, not the system volume. "Play my favourite" →
+  recall it first (list_favorites), then play it the right way. Resolve "it / that / this"
+  from what's playing, what's open, or what was just discussed.
+- Infer intent from imperfect speech-to-text and from context; disambiguate by looking
+  rather than asking. After acting, confirm it actually took effect when sensible, then
+  report what you did in ONE graceful line — not a play-by-play of every tool call.
+- Adapt when something fails or surprises you — you are an agent, not a script. When a tool
+  returns ok:false, an error, or nothing useful, read the OBSERVATION (including its `error`
+  and `data`) to understand WHY, then decide the next move yourself: retry with better
+  arguments (a shaky speech-to-text title → search again with fewer, cleaner terms), reach
+  the goal another way (an app that won't launch → list what's installed and match the
+  closest; a window not found → list windows and pick it), or — only when it genuinely can't
+  be done — say so plainly in your own voice and, if useful, how they might fix it. Never
+  parrot a raw error, never silently give up, and never repeat the identical failing call:
+  change something or conclude. Don't ask the user to handle what you can work out yourself.
+- No request ends empty. You ALWAYS finish with either an action that took effect or a spoken
+  {"final"} that says something real — never a blank reply, never dead air. If you reach the
+  end of your reasoning with nothing done, do the most sensible thing the request implies, or
+  say what you found; silence is never an acceptable outcome.
+- Not everything needs a tool — you are also a knowledgeable assistant. For general questions
+  (facts, explanations, how-to, advice, definitions, maths, language, a bit of conversation),
+  just ANSWER directly with {"final":"..."} from your own knowledge; don't force a tool and
+  don't refuse something you can simply answer. Reserve tools for acting on THIS computer or
+  reading its live state (what's open/playing, the weather, the news, the user's files). If a
+  question needs current real-world facts you can't know, say so plainly rather than guessing.
+- Treat the user's words as intent, not a literal spec. Speech-to-text is imperfect and the
+  phrasing is often rough — reinterpret it charitably into what they most likely meant, refine
+  it yourself into a clean tool query or a clear plan, and proceed. Solve it in small
+  incremental steps: take one action, read the OBSERVATION, adjust, repeat until it's truly
+  done. Only ask the user when intent is genuinely ambiguous and you can't settle it by looking.
+- When NO named tool fits, you are not stuck — you have a full Linux shell. Discover what the
+  machine can do and use it: run_command with read-only discovery first ("command -v <tool>",
+  "compgen -c", "ls /usr/bin | grep -i <x>", "which <tool>") to find the right program, then
+  run it (a normal command directly; a risky/root one still via run_command, which the user
+  approves). If something seems off, higher-stakes, or genuinely ambiguous, raise a "choice"
+  with real options instead of guessing. Anything the box can do, you can do — figure it out.
+
+Recipes (these show the pattern; bring the same judgement to everything):
 - "Do I have a terminal / browser / editor / <app> open?" → is_running with name set to the
   type or app ("terminal", "browser", "editor", "chrome", "code", "konsole"). is_running
   understands these categories (Alacritty/Konsole = terminal, Chrome/Chromium = browser).
@@ -62,32 +135,56 @@ Recipes:
   project from the window title if you can).
 - "What's the news / my briefing / what's happening today?" → call get_news (the user's
   personal N.E.W.S. briefing), then deliver a short SPOKEN briefing: a few sentences
-  walking the top items area by area (don't just name one headline, and don't read every
-  item verbatim). This is one of the cases where a slightly longer answer is right.
-- "Play music" / "put on something <mood>" (e.g. "I'm bored, play something inspiring") →
-  browse with list_music FIRST: start with no args to see the top-level folders/albums,
-  step into a folder with path, or search by name with query. Pick the tracks (or a whole
-  album folder) that fit, then play_music with those exact paths — it opens a visible
-  player window. Never open a file manager or terminal for this, and never invent
-  filenames. "Stop the music" → stop_playback.
-  Search smart: the request comes from imperfect speech-to-text, so DON'T pass the whole
-  sentence as the query. Extract the real key terms — artist, album, song — and search
-  with those (e.g. "play some kendrick lamar gnx album song" → query "kendrick gnx", or
-  just "kendrick"). list_music does fuzzy, term-based matching, so a couple of right words
-  is enough and near-misses still hit. If a search returns nothing, retry with fewer or
-  alternate terms (drop the shakiest word) before concluding there's no match.
-- "Play <X> on YouTube" / a brand-new song not in the local library → play_youtube with a
-  clean query (artist + song). It opens Chrome and plays the first hit. "Stop the video /
-  YouTube" → stop_youtube. Prefer local list_music/play_music when the user just says
-  "play <song>" without "on youtube"; use play_youtube when they say YouTube or want
-  something new the library wouldn't have.
-  Once a YouTube video is playing, control IT with the youtube_* tools, not the system ones:
+  walking the top items area by area (the layers run from close to home outward to the
+  world; don't just name one headline, and don't read every item verbatim). This is one of
+  the cases where a slightly longer answer is right. If get_news comes back ok:false — the
+  service is offline, the login was rejected, or it isn't set up — do NOT fall silent or
+  retry it blindly: tell the user plainly and briefly, in your own voice, what went wrong.
+- "What's the weather / will it rain / do I need a jacket?" → weather (no args uses their
+  KDE-configured location; pass location only when they name a different place). Answer the
+  actual question — for "do I need a jacket / umbrella" decide from the conditions and say so.
+- "Good morning" / "brief me" / "what's my day look like?" → this is a plan: greet them for
+  the actual time of day, then gather the pieces that fit a briefing — weather, the news
+  (get_news), and anything pending (notifications) — and weave them into one short, natural
+  spoken rundown. Don't dump raw tool output; synthesise it.
+- "Play <anything>" — a song, an artist, a mood, a video, a channel's latest, a clip: ANY
+  "play X" request goes to YouTube. ALWAYS use play_youtube; do NOT browse or play the local
+  library even if a copy exists there — the user wants everything streamed from YouTube.
+  Just call play_youtube with a CLEAN search query — it plays the first result, which is
+  almost always right; trust it rather than asking which. To switch to a different song/video
+  you do NOT need to stop first: calling play_youtube again SWAPS the new one into the SAME
+  Chrome session (it does not relaunch the browser). Use stop_youtube only when the user
+  actually wants playback to END.
+    • a song → artist + title ("play nataka kulewa" → query "nataka kulewa"; "play some
+      kendrick lamar gnx album" → "kendrick lamar gnx").
+    • a video / channel / latest → keep the phrasing that finds it ("play mr beast latest
+      video" → "mrbeast latest", "play fish13" → "fish13").
+  The request is from imperfect speech-to-text: extract the real key terms, drop filler.
+  CONFIRM BEFORE YOU CLAIM IT — never say something is playing on a guess. play_youtube does
+  not return until it has actually searched and loaded a video; its OBSERVATION tells you the
+  truth: `confirmed` (did a video really start) and `data.title` (the REAL title now on
+  screen). Use them like an intelligent person who glanced at the screen before speaking:
+    • confirmed:false or ok:false → it did NOT start. Do NOT say it's playing. Read the error,
+      then retry with a cleaner query (e.g. "mr beast latest video" → "mrbeast latest"); after
+      a second genuine failure, say plainly it wouldn't play — never pretend it did.
+    • confirmed:true → judge `data.title` against what they asked. If it's clearly the wrong
+      thing (the title has nothing to do with the request), youtube_control "next" to skip, or
+      retry play_youtube with a sharper query. When you DO report, name what is ACTUALLY playing
+      from data.title ("Now playing MrBeast's latest, …"), not a parroting of their words. If in
+      any doubt about what's on screen, youtube_status to check before you speak.
+  Never fall back to local music, never open a file manager or terminal for this, and never
+  invent results. "Stop the music/video" → stop_youtube. (list_music / play_music exist ONLY
+  for an explicit "play my LOCAL music" / "from my library/files" — otherwise always play_youtube.)
+  Once a video is playing, control IT with the youtube_* tools, not the system ones:
   youtube_volume for "turn the video up/down", "make YouTube louder/quieter", "set the video
   to 40" (level 0-100, or action up/down/mute/unmute); youtube_control for "pause/resume the
-  video", "skip this / next one" (next), "start it over" (restart), or "skip ahead/back 30
-  seconds" (action seek, seconds +/-N); youtube_status for "what's playing on YouTube". The
-  YouTube volume is SEPARATE from the system volume: use set_volume only for the machine's
-  overall volume, and youtube_volume when the user means the video/YouTube/Chrome sound.
+  video", "skip this / next one" (next), "start it over" (restart), "skip ahead/back 30
+  seconds" (action seek, seconds +/-N), and "full screen / fullscreen / make it full screen /
+  exit fullscreen" (action fullscreen — this toggles YouTube's OWN fullscreen through the
+  player itself, so NEVER use press_keys/type_text or shell for fullscreen); youtube_status
+  for "what's playing on YouTube". The YouTube volume is SEPARATE from the system volume: use
+  set_volume only for the machine's overall volume, and youtube_volume when the user means
+  the video/YouTube/Chrome sound.
 - "What projects do I have?" / "my <name> project" → list_projects (folders in {projects_dir}).
 - "Lock / unlock the screen" → lock_screen / unlock_screen. "Suspend / sleep / hibernate /
   reboot / shut down / log out" → power_action with that exact action. Use these only on a
@@ -118,6 +215,21 @@ hears), NOT to the tool JSON or your reasoning:
 
 Tools:
 {catalog}"""
+
+
+def _now_context() -> str:
+    """Human-readable current date & time for grounding the model, e.g.
+    'Tuesday, 26 May 2026, 14:32 (EAT)'. Honours AETHER_TZ; otherwise the system local zone."""
+    s = get_settings()
+    now = datetime.now().astimezone()
+    if s.timezone:
+        try:
+            from zoneinfo import ZoneInfo
+            now = datetime.now(ZoneInfo(s.timezone))
+        except Exception:  # noqa: BLE001 - bad tz name -> fall back to local
+            pass
+    tz = now.strftime("%Z")
+    return now.strftime("%A, %d %B %Y, %H:%M") + (f" ({tz})" if tz else "")
 
 
 async def _emit(on_progress: Progress, step: str, label: str) -> None:
@@ -216,7 +328,7 @@ async def _backend_tool(tool: str, params: dict) -> dict:
     return {"ok": False, "summary": f"unknown backend tool '{tool}'"}
 
 
-async def handle(text: str, *, transcript: str | None = None, confirmed: bool = False,
+async def handle(text: str, *, transcript: str | None = None,
                  clarify: "Clarification | None" = None, session: str | None = None,
                  on_progress: Progress = None) -> CommandResult:
     text = (text or "").strip()
@@ -226,6 +338,7 @@ async def handle(text: str, *, transcript: str | None = None, confirmed: bool = 
     s = get_settings()
     session = session or "default"
     system = (AGENT_SYSTEM
+              .replace("{context}", _now_context())
               .replace("{persona}", llm.PERSONA)
               .replace("{catalog}", catalog_for_prompt())
               .replace("{music_dir}", s.music_dir)
@@ -247,6 +360,13 @@ async def handle(text: str, *, transcript: str | None = None, confirmed: bool = 
     result = await _loop(messages, transcript, on_progress, trace=trace)
     if result.skill is None:
         result.skill = trace["skill"]
+    # Hard never-silent guarantee: any result that reaches here unspoken (a path that bypassed
+    # _finish, or host audio that yielded nothing) gets voiced now, with a fallback line if it
+    # somehow has no summary at all. The `spoken` flag prevents double-speaking.
+    if s.speak_on_host and not result.spoken:
+        if not (result.summary or "").strip():
+            result.summary = FALLBACK_REPLY
+        result.spoken = await _speak(result.summary)
     # Persist (best-effort): audit log + transcript, and roll the follow-up context forward.
     try:
         await db.log_interaction(session=session, transcript=transcript, request=text,
@@ -277,49 +397,83 @@ async def _loop(messages: list[dict], transcript: str | None, on_progress: Progr
         if not isinstance(obj, dict):
             return await _finish(_done(transcript, content or "Done."), on_progress)
 
+        # ReAct scratchpad: a private 'thought' may accompany any turn — log it, never speak it.
+        thought = obj.get("thought")
+        if thought:
+            log.info("agent step %d plan: %s", step, str(thought)[:400])
+
         choice = obj.get("choice")
         if isinstance(choice, dict) and choice.get("question"):
             options = [str(o) for o in (choice.get("options") or []) if str(o).strip()]
+            if len(options) < 2:
+                # A question with no real options is useless in the UI (just text + "Never
+                # mind"). Don't surface it — push the model to either act or ask properly.
+                messages.append({"role": "assistant", "content": json.dumps(obj)})
+                messages.append({"role": "user", "content": "That choice had no options to pick "
+                                 "from. Either act now with the best tool call, or re-ask with "
+                                 "2-4 concrete, distinct options. Reply as JSON."})
+                continue
             return await _ask_choice(transcript, str(choice["question"]), options, on_progress)
 
-        if "final" in obj or (not obj.get("tool") and not obj.get("skill")):
-            final = obj.get("final") or (obj.get("params") or {}).get("text") or content
-            return await _finish(_done(transcript, str(final)), on_progress)
-
         tool = obj.get("tool") or obj.get("skill")
+
+        if "final" in obj:
+            final = (obj.get("final") or (obj.get("params") or {}).get("text") or "").strip()
+            return await _finish(_done(transcript, final or FALLBACK_REPLY), on_progress)
+
+        if not tool:
+            # No action and no final answer. If the model only reasoned aloud, nudge it to act
+            # rather than mistaking a bare plan for a finished reply.
+            if thought:
+                await _emit(on_progress, "thinking", "Planning the next step…")
+                messages.append({"role": "assistant", "content": json.dumps(obj)})
+                messages.append({"role": "user", "content": "Now act on that plan: reply with the "
+                                 "next tool call, a choice, or your final answer as JSON."})
+                continue
+            final = ((obj.get("params") or {}).get("text") or content or "").strip()
+            return await _finish(_done(transcript, final or FALLBACK_REPLY), on_progress)
+
         params = obj.get("params") if isinstance(obj.get("params"), dict) else {}
         log.info("agent step %d: tool=%s params=%s", step, tool,
                  {k: v for k, v in params.items() if "password" not in k})
         if tool in ("answer", "final", "reply", "respond"):
-            return await _finish(_done(transcript, params.get("text") or content), on_progress)
+            final = (params.get("text") or "").strip()
+            return await _finish(_done(transcript, final or FALLBACK_REPLY), on_progress)
         messages.append({"role": "assistant", "content": json.dumps(obj)})
 
         # ---- execute the tool, with safety on run_command ----
-        if tool == "run_command":
-            command = str(params.get("command", "")).strip()
-            verdict = classify_command(command)
-            if verdict.verdict == "block":
-                result: dict[str, Any] = {"ok": False, "summary": f"blocked for safety: {verdict.reason}"}
-            elif verdict.verdict == "confirm" and s.require_confirm_medium_risk:
-                root = " (needs root)" if _SUDO.search(command) else ""
-                return CommandResult(ok=False, status="needs_confirmation", transcript=transcript,
-                                     skill="run_command", params={"command": command},
-                                     summary=f"Approve running{root}: {command}",
-                                     detail=f"{verdict.reason}.")
+        # Any unexpected exception here becomes a graceful OBSERVATION rather than a crash,
+        # so the loop continues and the model voices the failure — a request never dies silently.
+        try:
+            if tool == "run_command":
+                command = str(params.get("command", "")).strip()
+                verdict = classify_command(command)
+                if verdict.verdict == "block":
+                    result: dict[str, Any] = {"ok": False, "summary": f"blocked for safety: {verdict.reason}"}
+                elif verdict.verdict == "confirm" and s.require_confirm_medium_risk:
+                    root = " (needs root)" if _SUDO.search(command) else ""
+                    return CommandResult(ok=False, status="needs_confirmation", transcript=transcript,
+                                         skill="run_command", params={"command": command},
+                                         summary=f"Approve running{root}: {command}",
+                                         detail=f"{verdict.reason}.")
+                else:
+                    await _emit(on_progress, "executing", f"Running: {command[:60]}")
+                    result = await host_client.execute("run_command", params)
+            elif tool == "get_news":
+                await _emit(on_progress, "executing", "Fetching your news briefing…")
+                result = await news.get_briefing()   # handled by the backend, not the host agent
+            elif tool in _BACKEND_TOOLS:
+                await _emit(on_progress, "executing", f"Looking that up ({tool})…")
+                result = await _backend_tool(tool, params)
+            elif tool in SKILL_NAMES:
+                await _emit(on_progress, "executing", f"Running it ({tool})…")
+                result = await host_client.execute(tool, params)
             else:
-                await _emit(on_progress, "executing", f"Running: {command[:60]}")
-                result = await host_client.execute("run_command", params)
-        elif tool == "get_news":
-            await _emit(on_progress, "executing", "Fetching your news briefing…")
-            result = await news.get_briefing()      # handled by the backend, not the host agent
-        elif tool in _BACKEND_TOOLS:
-            await _emit(on_progress, "executing", f"Looking that up ({tool})…")
-            result = await _backend_tool(tool, params)
-        elif tool in SKILL_NAMES:
-            await _emit(on_progress, "executing", f"Running it ({tool})…")
-            result = await host_client.execute(tool, params)
-        else:
-            result = {"ok": False, "summary": f"unknown tool '{tool}'"}
+                result = {"ok": False, "summary": f"unknown tool '{tool}'"}
+        except Exception as e:  # noqa: BLE001
+            log.exception("tool %s raised", tool)
+            result = {"ok": False, "summary": f"The {tool} step hit an unexpected error.",
+                      "data": {"error": str(e)}}
 
         trace["skill"] = tool
         # Learn from what actually gets played, so favourites can be recalled/inferred later.
@@ -333,8 +487,13 @@ async def _loop(messages: list[dict], transcript: str | None, on_progress: Progr
                 except Exception as e:  # noqa: BLE001
                     log.warning("record_play failed: %s", e)
 
-        observation = json.dumps({"ok": result.get("ok"), "summary": result.get("summary"),
-                                  "data": result.get("data")}, ensure_ascii=False)
+        # Surface the real failure detail (error/detail), not just the canned summary, so the
+        # model can reason about WHY and adapt — recovery is its job, not a hardcoded branch.
+        obs: dict[str, Any] = {"ok": result.get("ok"), "summary": result.get("summary"),
+                               "data": result.get("data")}
+        if not result.get("ok"):
+            obs["error"] = result.get("error") or result.get("detail")
+        observation = json.dumps(obs, ensure_ascii=False)
         messages.append({"role": "user", "content": "OBSERVATION: " + observation[:OBS_LIMIT]})
 
     # Out of steps — ask for a final summary from what was gathered.
@@ -393,8 +552,31 @@ async def _finish(result: CommandResult, on_progress: Progress = None) -> Comman
     s = get_settings()
     if s.speak_on_host and result.summary:
         await _emit(on_progress, "speaking", "Speaking…")
-        try:
-            result.spoken = await host_client.play_audio(tts.synthesize(result.summary))
-        except Exception as e:  # noqa: BLE001
-            log.warning("TTS/playback failed: %s", e)
+        result.spoken = await _speak(result.summary)
     return result
+
+
+async def speak(summary: str, *, transcript: str | None = None, status: str = "error",
+                ok: bool = False, on_progress: Progress = None) -> CommandResult:
+    """Voice a standalone message on the host and return it as a result. For failures that
+    happen outside the agent loop (e.g. a transcription error) so they're never silent."""
+    return await _finish(CommandResult(ok=ok, status=status, transcript=transcript,
+                                       summary=summary), on_progress)
+
+
+async def _speak(text: str) -> bool:
+    """Synthesize and play `text` on the host. If the real text won't synthesize OR produces
+    no audio (e.g. content Kokoro can't voice), fall back to a short spoken line so the host
+    is never left silent — the full text is still returned to the web client regardless."""
+    try:
+        if await host_client.play_audio(tts.synthesize(text)):
+            return True
+        log.warning("TTS produced no audio for the reply; trying a short fallback.")
+    except Exception as e:  # noqa: BLE001
+        log.warning("TTS/playback failed, trying a short fallback: %s", e)
+    try:
+        return await host_client.play_audio(tts.synthesize(
+            "My apologies — I have the answer on screen, but I can't voice it just now."))
+    except Exception as e:  # noqa: BLE001
+        log.warning("TTS fallback also failed: %s", e)
+        return False

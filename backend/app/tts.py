@@ -11,6 +11,7 @@ for playback on the host (via the host agent) and for the browser.
 import io
 import logging
 import re
+import unicodedata
 
 import numpy as np
 import soundfile as sf
@@ -27,6 +28,22 @@ MAX_CHUNK_CHARS = 280
 GAP_SECONDS = 0.18
 
 _SENTENCE = re.compile(r"[^.!?\n]+[.!?]*\s*")
+
+# Kokoro phonemizes via espeak-ng; emoji, pictographs and other symbol/control characters
+# either error out or yield empty audio (common in notification text). Strip them to a
+# speakable subset before synthesis so a reply is never silently dropped on its content.
+_UNSPEAKABLE = re.compile(
+    "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF"
+    "\U0000FE00-\U0000FE0F\U00002190-\U000021FF\U00002B00-\U00002BFF\U0000200D\U0000FE0F]"
+)
+_CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _speakable(text: str) -> str:
+    """Reduce text to characters Kokoro can actually voice; collapse the leftover gaps."""
+    text = _UNSPEAKABLE.sub(" ", text)
+    text = _CTRL.sub(" ", text)
+    return re.sub(r"[ \t]{2,}", " ", text).strip()
 
 
 def _get_kokoro():
@@ -74,7 +91,7 @@ def _chunk(text: str) -> list[str]:
 def synthesize(text: str) -> bytes:
     """Render `text` to WAV bytes, concatenating per-sentence audio. Returns b'' on
     empty input."""
-    text = (text or "").strip()
+    text = _speakable(text or "")
     if not text:
         return b""
     s = get_settings()

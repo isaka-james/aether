@@ -132,6 +132,49 @@ def _state() -> dict | None:
         return None
 
 
+# How long to wait for the worker to actually search YouTube and load the video before we
+# report back. The box is slow (cold Chrome start + search + video load), so be generous —
+# the backend allows up to 120s per skill call. Better a true answer in 30s than a false
+# "playing" in 0s.
+_FRESH_TIMEOUT = 95.0   # fresh launch: Chrome cold-start + first search + play
+_REUSE_TIMEOUT = 70.0   # same session: just a new search + play (stays under the 120s cap)
+
+
+def _await_play(req: str, timeout: float) -> dict | None:
+    """Block (bounded) until the worker publishes the outcome of the play we asked for —
+    matched by `req` so a stale result can't fool us — and return it: {ok, query, title}.
+    None means the worker never confirmed in time (stuck/dead browser). This is the
+    confirmation that turns 'I queued a command' into 'the video is actually playing'."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        play = (_state() or {}).get("play")
+        if isinstance(play, dict) and str(play.get("req")) == req:
+            return play
+        if not _alive():  # worker died before confirming — don't keep waiting
+            return None
+        time.sleep(0.3)
+    return None
+
+
+def _play_outcome(query: str, res: dict | None, *, reused: bool) -> dict:
+    """Turn a confirmed (or unconfirmed) play into an honest result. We NEVER claim something
+    is playing unless the worker confirmed the video loaded; the real on-screen title goes in
+    `data.title` so the agent can judge whether it's really what was asked and react."""
+    if res is None:
+        return fail(f"I tried to play “{query}” on YouTube but couldn't confirm it actually "
+                    "started — the browser may be stuck or still loading.",
+                    query=query, confirmed=False)
+    if not res.get("ok"):
+        return fail(f"The YouTube search for “{query}” didn't lead to a playing video — the "
+                    "results or the player didn't load.", query=query, confirmed=False)
+    title = (res.get("title") or "").strip()
+    if title:
+        return ok(f"Now playing on YouTube: “{title}”.",
+                  query=query, title=title, confirmed=True, reused=reused)
+    return ok(f"Playing “{query}” on YouTube.",
+              query=query, title="", confirmed=True, reused=reused)
+
+
 @skill("play_youtube")
 def play_youtube(params):
     query = str(params.get("query") or params.get("text") or "").strip()
@@ -139,14 +182,31 @@ def play_youtube(params):
         return fail("What should I play on YouTube?")
     if not _ready():
         return fail("Browser playback isn't set up yet — run scripts/setup-browser.sh on the host.")
-    _stop()  # replace any current playback
+    # Reuse the already-open Chrome: if a playback session is live, tell the worker to search
+    # and play the new query in the SAME browser/tab — no closing and relaunching — then WAIT
+    # for it to confirm the video actually loaded before reporting back.
+    if _alive():
+        req = str(time.time_ns())
+        _send({"action": "play_query", "query": query, "req": req})
+        res = _await_play(req, _REUSE_TIMEOUT)
+        if res is not None:
+            return _play_outcome(query, res, reused=True)
+        # The live session never confirmed. If the worker has since exited (its Chrome died),
+        # the session is simply gone — tear down the stale pidfile and fall through to a fresh
+        # launch so playback self-heals instead of dead-ending. If the worker is still alive it
+        # was genuinely too slow; report that honestly rather than relaunching on top of it.
+        if _alive():
+            return _play_outcome(query, None, reused=True)
+        _stop()
+    # Otherwise start a fresh session and wait for its initial play (req "init") to confirm.
+    _stop()  # clean up any stale pidfile/control channel
     proc = subprocess.Popen(
         [_VENV_PY, _WORKER, query],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
     )
     with open(_PIDFILE, "w") as f:
         f.write(str(proc.pid))
-    return ok(f"Opening YouTube in Chrome and playing “{query}”.", query=query)
+    return _play_outcome(query, _await_play("init", _FRESH_TIMEOUT), reused=False)
 
 
 @skill("stop_youtube")
@@ -176,12 +236,15 @@ def youtube_volume(params):
     return ok(f"YouTube volume set to {level} percent.", level=level)
 
 
-_YT_ACTIONS = {"play", "pause", "playpause", "next", "restart"}
+_YT_ACTIONS = {"play", "pause", "playpause", "next", "restart",
+               "fullscreen", "fullscreen_on", "fullscreen_off"}
 
 
 @skill("youtube_control")
 def youtube_control(params):
-    """Transport control for the playing YouTube video (pause/resume/next/restart/seek)."""
+    """Transport control for the playing YouTube video (pause/resume/next/restart/seek/
+    fullscreen). Fullscreen is toggled through the player itself over CDP — no OS input
+    simulation — so it never raises the desktop 'remote control' permission prompt."""
     if not _alive():
         return fail("Nothing is playing on YouTube right now.")
     action = str(params.get("action", "playpause")).lower()
@@ -198,7 +261,8 @@ def youtube_control(params):
     _send({"action": action})
     msg = {"play": "Resumed the video.", "pause": "Paused the video.",
            "playpause": "Toggled play/pause.", "next": "Skipping to the next video.",
-           "restart": "Back to the start."}[action]
+           "restart": "Back to the start.", "fullscreen": "Toggled fullscreen.",
+           "fullscreen_on": "Full screen.", "fullscreen_off": "Exited full screen."}[action]
     return ok(msg)
 
 

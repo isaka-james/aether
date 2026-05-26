@@ -137,17 +137,18 @@ async def log_interaction(*, session: str | None, transcript: str | None, reques
 
 # --- notification archive -----------------------------------------------------
 async def archive_notifications(items: list[dict]) -> int:
-    """Upsert host-captured notifications; ignores ones we've already stored. Returns #new."""
+    """Upsert host-captured notifications, ignoring ones already stored. Returns the number
+    of rows submitted (executemany doesn't report how many conflicts were skipped)."""
     if _pool is None or not items:
         return 0
     rows = [(float(i.get("ts") or 0), i.get("app"), i.get("summary"), i.get("body"))
             for i in items]
     try:
         async with _pool.acquire() as c:
-            res = await c.executemany(
+            await c.executemany(
                 "INSERT INTO notifications (ts, app, summary, body) VALUES ($1,$2,$3,$4)"
                 " ON CONFLICT (ts, summary) DO NOTHING", rows)
-            return len(rows) if res is None else len(rows)
+        return len(rows)
     except Exception as e:  # noqa: BLE001
         log.warning("archive_notifications failed: %s", e)
         return 0
@@ -255,6 +256,36 @@ async def top_plays(limit: int = 5, source: str | None = None) -> list[dict]:
         return [{"label": r["label"], "count": r["n"]} for r in rows]
     except Exception as e:  # noqa: BLE001
         log.warning("top_plays failed: %s", e)
+        return []
+
+
+# --- request suggestions ------------------------------------------------------
+async def top_requests(limit: int = 6, session: str | None = None) -> list[str]:
+    """The user's most-frequently-issued requests (for the web's suggestion chips).
+
+    Groups the interaction log by the request text (case-insensitively), favouring ones
+    asked often and recently, and returns a representative phrasing of each. Trivial/short
+    or failed entries are skipped so the chips stay useful."""
+    if _pool is None:
+        return []
+    try:
+        async with _pool.acquire() as c:
+            rows = await c.fetch(
+                """
+                SELECT (array_agg(request ORDER BY created_at DESC))[1] AS sample,
+                       COUNT(*) AS n, MAX(created_at) AS last
+                FROM interactions
+                WHERE request IS NOT NULL AND char_length(trim(request)) >= 6
+                  AND ($1::text IS NULL OR session = $1)
+                  AND COALESCE(ok, true) = true
+                GROUP BY lower(trim(request))
+                ORDER BY n DESC, last DESC
+                LIMIT $2
+                """,
+                session, limit)
+        return [r["sample"].strip() for r in rows if (r["sample"] or "").strip()]
+    except Exception as e:  # noqa: BLE001
+        log.warning("top_requests failed: %s", e)
         return []
 
 

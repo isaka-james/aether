@@ -4,9 +4,10 @@ This catalog is the single source of truth: it is rendered into the LLM's system
 prompt (so the model knows what it can do) and used to validate the model's chosen
 skill before dispatch to the host agent.
 
-Design note: the model is a quantized 7B, so the list is kept flat and concrete with
-unambiguous parameters. Anything not covered here is handled by `run_command`, whose
-output is screened for safety and (for risky / root commands) approved by the user.
+Design note: each skill stays flat and concrete with unambiguous parameters so the model
+can compose them reliably into multi-step plans (check state → resolve a conflict → act →
+verify). Anything not covered here is handled by `run_command`, whose output is screened
+for safety and (for risky / root commands) approved by the user.
 """
 from dataclasses import dataclass
 
@@ -34,32 +35,42 @@ SKILLS: list[Skill] = [
     Skill("media_control", "Play/pause/skip the current media player.",
           '{"action": "playpause|play|pause|next|previous|stop"}'),
     Skill("now_playing", "Say what song/media is currently playing.", "none"),
-    # --- Local music library (~/Music) ---
-    Skill("list_music", "Browse the user's music under ~/Music like a folder tree. No args "
-                        "lists the top level (albums/folders + loose tracks); pass 'path' to "
-                        "step into a folder; pass 'query' to search the whole tree by name. "
-                        "Call this FIRST — navigate to the right tracks, never guess paths.",
+    # --- Local music library (~/Music) — ONLY for an explicit "play my local/library/files"
+    #     request. For any ordinary "play X", use play_youtube instead. ---
+    Skill("list_music", "Browse the user's LOCAL music under ~/Music like a folder tree. No "
+                        "args lists the top level (albums/folders + loose tracks); pass 'path' "
+                        "to step into a folder; pass 'query' to search the tree by name. Only "
+                        "for explicit 'play my local music / from my library'.",
           '{} (top level)  OR  {"path": "Album Folder"}  OR  {"query": "text"}'),
-    Skill("play_music", "Play local music from ~/Music in a visible player window. Give the "
-                        "exact track paths from list_music (preferred), or a folder path to "
-                        "play a whole album, or a query to play everything matching. For a "
-                        "mood, browse/search first, pick fitting tracks, then play those.",
+    Skill("play_music", "Play LOCAL music from ~/Music in a visible player window. Use ONLY for "
+                        "an explicit 'play my local music / from my files'; otherwise use "
+                        "play_youtube. Give exact track paths from list_music, a folder path "
+                        "for a whole album, or a query to play everything matching.",
           '{"paths": ["Album/01 Song.mp3", ...]}  OR  {"paths": ["Album"]}  OR  {"query": "text"}  (+ optional "shuffle": true)'),
-    Skill("stop_playback", "Stop the local music that play_music started.", "none"),
+    Skill("stop_playback", "Stop the LOCAL music that play_music started.", "none"),
     # --- YouTube / web playback (real Google Chrome over CDP) ---
-    Skill("play_youtube", "Open Chrome and play something from YouTube: searches the query "
-                          "and plays the first result. Use when the user asks to play a song/"
-                          "video ON YOUTUBE or something not in their local library (e.g. a "
-                          "brand-new release).",
-          '{"query": "new diamond platnumz song"}'),
-    Skill("stop_youtube", "Close/stop the YouTube playback in Chrome.", "none"),
+    Skill("play_youtube", "Open Chrome and play from YouTube: searches the query and plays the "
+                          "first result. THE default for any 'play X' — a song, artist, mood, "
+                          "video, a channel's latest, a clip, anything. Use a clean query "
+                          "(artist+title, or e.g. 'mrbeast latest'). Do not use local music "
+                          "unless the user explicitly says 'my local/library/files'.",
+          '{"query": "nataka kulewa"}  OR  {"query": "mrbeast latest video"}'),
+    Skill("stop_youtube", "End the YouTube playback in Chrome entirely. Only for 'stop the "
+                          "video/music' — to switch to a different song/video just call "
+                          "play_youtube again (it swaps in the same browser; no need to stop).",
+          "none"),
     Skill("youtube_volume", "Set the volume of the YouTube video itself (the Chrome playback), "
                             "separate from the system volume. Use for 'turn the video up/down', "
                             "'make YouTube louder/quieter', 'set the video volume to 40'.",
           '{"level": 0-100}  OR  {"action": "up|down|mute|unmute"}'),
-    Skill("youtube_control", "Control the currently playing YouTube video: pause, resume, skip "
-                             "to the next video, restart it, or jump forward/back N seconds.",
-          '{"action": "play|pause|playpause|next|restart"}  OR  {"action": "seek", "seconds": 15 (or -15)}'),
+    Skill("youtube_control", "Control the playing YouTube video: pause, resume, skip to the "
+                             "next video, restart, jump forward/back N seconds, or toggle the "
+                             "video's fullscreen. Use action fullscreen for 'full screen / make "
+                             "it full screen / exit fullscreen' — it's done through the player "
+                             "(no key simulation), so it never raises the desktop remote-control "
+                             "prompt; NEVER use press_keys for fullscreen.",
+          '{"action": "play|pause|playpause|next|restart|fullscreen|fullscreen_on|fullscreen_off"}'
+          '  OR  {"action": "seek", "seconds": 15 (or -15)}'),
     Skill("youtube_status", "Say what's playing on YouTube right now (title, playing/paused, volume).",
           "none"),
     # --- Projects (~/Projects) ---
@@ -105,6 +116,10 @@ SKILLS: list[Skill] = [
     Skill("get_news", "Fetch the user's personal news briefing (today's headlines by area) "
                       "from their N.E.W.S. service. Use for 'what's the news', 'my briefing', etc.",
           "none"),
+    Skill("weather", "Current weather and today's outlook for the user's location (read from "
+                     "their KDE weather widget) or a named place. Use for 'what's the weather', "
+                     "'will it rain', 'do I need a jacket', and as part of a morning briefing.",
+          '{} (their location)  OR  {"location": "Nairobi"}'),
     # --- Memory: favourites & preferences (persisted; lets Aether recall what the user likes) ---
     Skill("list_favorites", "List the user's saved favourites (songs/videos/etc.). Call this to "
                             "resolve 'play my favourite song', 'put on a favourite'. If none are "

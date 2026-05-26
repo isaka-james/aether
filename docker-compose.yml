@@ -16,6 +16,9 @@ services:
       # Point the app at the sibling services (override in .env if you must).
       AETHER_DATABASE_URL: ${AETHER_DATABASE_URL:-postgresql://aether:${POSTGRES_PASSWORD:-aether}@db:5432/aether}
       AETHER_REDIS_URL: ${AETHER_REDIS_URL:-redis://redis:6379/0}
+      # So the agent knows the correct local date/time. Defaults to the host's $TZ; you can
+      # also set AETHER_TZ in .env to an IANA zone (e.g. Africa/Dar_es_Salaam).
+      TZ: ${TZ:-}
     depends_on:
       db:
         condition: service_healthy
