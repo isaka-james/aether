@@ -118,15 +118,23 @@ def _shape(report) -> dict:
                 "summary": f"{title}. {opening} Today's briefing came through empty — no stories "
                            "made the cut across any of your layers.".strip()}
 
+    # Shape the spoken briefing as discrete sentences (no em-dashes, no semicolons): each
+    # layer gets its own sentence, with headlines joined by ", and " so the TTS chunker has
+    # clean breaks and the result reads naturally aloud, never as one breathless run-on.
     parts = [title]
     if opening:
         parts.append(opening)
     for l in layers:
-        line = l["label"]
         if l["headlines"]:
-            line += " — " + "; ".join(l["headlines"])
+            heads = l["headlines"]
+            if len(heads) == 1:
+                line = f"{l['label']}: {heads[0]}"
+            else:
+                line = f"{l['label']}: {', '.join(heads[:-1])}, and {heads[-1]}"
         elif l["mood"]:
-            line += " — " + l["mood"]
+            line = f"{l['label']}: {l['mood']}"
+        else:
+            continue
         parts.append(line)
     if closing:
         parts.append(closing)

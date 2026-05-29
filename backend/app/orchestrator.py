@@ -42,6 +42,27 @@ OBS_LIMIT = 4000  # generous enough that a full multi-layer news briefing isn't 
 # Voiced when the model returns nothing usable — better a graceful line than silence.
 FALLBACK_REPLY = "I'm afraid I've come up short on that one, sir."
 
+# Statuses that represent the agent talking — a finished answer (done), a question
+# (needs_choice), or an approval prompt (needs_confirmation). Everything else (error,
+# blocked) is an infrastructure failure that surfaces on the web as a detailed flash but
+# stays silent on the speakers. The gate is STATUS only: `ok` may legitimately be False
+# on a needs_confirmation prompt or on a curated "done" reply where the underlying tool
+# failed — the agent still needs its voice.
+_SPEAK_STATUSES = {"done", "needs_choice", "needs_confirmation"}
+
+
+def _should_speak(result: "CommandResult") -> bool:
+    """True when the result is something Aether says aloud — not a system-error flash."""
+    if result.status not in _SPEAK_STATUSES:
+        log.info("speak skipped: status=%s (silent: error/block flashes on web only).",
+                 result.status)
+        return False
+    if not (result.summary or "").strip():
+        log.info("speak skipped: empty summary (status=%s, skill=%s).",
+                 result.status, result.skill)
+        return False
+    return True
+
 AGENT_SYSTEM = """You are Aether, a capable assistant that controls a Linux KDE computer.
 
 Right now it is {context}. Treat this as ground truth for anything time- or date-related
@@ -101,7 +122,16 @@ the literal words. These principles apply to EVERY skill, not only the examples 
   closest; a window not found → list windows and pick it), or — only when it genuinely can't
   be done — say so plainly in your own voice and, if useful, how they might fix it. Never
   parrot a raw error, never silently give up, and never repeat the identical failing call:
-  change something or conclude. Don't ask the user to handle what you can work out yourself.
+  change something or conclude.
+- Treat failures as YOUR private problem to debug, not the user's. The user does not need a
+  play-by-play of what didn't work, which tool returned what, or how many things you tried.
+  Solve it. Use the OBSERVATIONS to diagnose, then quietly attempt a different angle: a
+  cleaner query, a different skill, run_command with a read-only probe to see WHY a thing
+  isn't where you expected, a sensible default when an input was ambiguous. Only after you
+  have genuinely exhausted reasonable options should the user hear about a failure — and
+  then in ONE composed sentence, with no diagnostics, no chained apologies, no "I tried X
+  and Y and Z". Be the kind of attendant who handles trouble so smoothly the principal
+  never has to know there was any.
 - No request ends empty. You ALWAYS finish with either an action that took effect or a spoken
   {"final"} that says something real — never a blank reply, never dead air. If you reach the
   end of your reasoning with nothing done, do the most sensible thing the request implies, or
@@ -360,12 +390,11 @@ async def handle(text: str, *, transcript: str | None = None,
     result = await _loop(messages, transcript, on_progress, trace=trace)
     if result.skill is None:
         result.skill = trace["skill"]
-    # Hard never-silent guarantee: any result that reaches here unspoken (a path that bypassed
-    # _finish, or host audio that yielded nothing) gets voiced now, with a fallback line if it
-    # somehow has no summary at all. The `spoken` flag prevents double-speaking.
-    if s.speak_on_host and not result.spoken:
-        if not (result.summary or "").strip():
-            result.summary = FALLBACK_REPLY
+    # Never-silent guarantee for SUCCESSFUL replies only. Errors/blocks are deliberately
+    # silent on the host — the user sees a detailed message in the web client instead, so
+    # the agent's voice stays reserved for things it actually wants to say. The `spoken`
+    # flag prevents double-speaking when _finish already played the reply.
+    if s.speak_on_host and not result.spoken and _should_speak(result):
         result.spoken = await _speak(result.summary)
     # Persist (best-effort): audit log + transcript, and roll the follow-up context forward.
     try:
@@ -389,9 +418,13 @@ async def _loop(messages: list[dict], transcript: str | None, on_progress: Progr
             content = await llm.complete(messages, json_mode=True)
         except Exception as e:  # noqa: BLE001
             log.warning("agent step failed: %s", e)
-            return await _finish(CommandResult(ok=False, status="error", transcript=transcript,
-                                 summary="My apologies — the language model is beyond reach "
-                                 "for the moment."), on_progress)
+            # Silent on the speakers (status=error); detailed text + `detail` is what the
+            # web client renders so the user can act on the real problem.
+            return await _finish(CommandResult(
+                ok=False, status="error", transcript=transcript,
+                summary="The language model isn't reachable just now — the request didn't get through.",
+                detail=f"LLM call failed at step {step}: {type(e).__name__}: {e}",
+            ), on_progress)
 
         obj = _parse(content)
         if not isinstance(obj, dict):
@@ -549,34 +582,55 @@ async def _ask_choice(transcript: str | None, question: str, options: list[str],
 
 
 async def _finish(result: CommandResult, on_progress: Progress = None) -> CommandResult:
+    """Finalize a result: speak it on the host only when it's a real, successful reply
+    from the agent. Errors and blocked actions are sent to the web client with full detail
+    but never voiced — sound is for things Aether wants to say, not for problems."""
     s = get_settings()
-    if s.speak_on_host and result.summary:
+    if s.speak_on_host and _should_speak(result):
         await _emit(on_progress, "speaking", "Speaking…")
         result.spoken = await _speak(result.summary)
     return result
 
 
 async def speak(summary: str, *, transcript: str | None = None, status: str = "error",
-                ok: bool = False, on_progress: Progress = None) -> CommandResult:
-    """Voice a standalone message on the host and return it as a result. For failures that
-    happen outside the agent loop (e.g. a transcription error) so they're never silent."""
+                ok: bool = False, detail: str | None = None,
+                on_progress: Progress = None) -> CommandResult:
+    """Surface a standalone message from outside the agent loop (e.g. a transcription
+    failure) as a CommandResult. Following the global rule: success-shaped results are
+    voiced on the host; errors/blocks are returned silently and the web client flashes
+    the (detailed) summary instead."""
     return await _finish(CommandResult(ok=ok, status=status, transcript=transcript,
-                                       summary=summary), on_progress)
+                                       summary=summary, detail=detail), on_progress)
 
 
 async def _speak(text: str) -> bool:
-    """Synthesize and play `text` on the host. If the real text won't synthesize OR produces
-    no audio (e.g. content Kokoro can't voice), fall back to a short spoken line so the host
-    is never left silent — the full text is still returned to the web client regardless."""
+    """Synthesize and play `text` on the host. tts.synthesize already drops or ASCII-fixes
+    chunks it can't voice, so a non-empty reply almost always yields some audio. If even
+    that came back empty, try a second pass on a hand-stripped version of the SAME answer
+    so the user still hears the real reply, slightly degraded; only as a last resort speak
+    a short in-character recovery line — and NEVER one that claims the answer is 'on screen'
+    (the user may be on voice with no UI in view) or that the agent 'can't pronounce' it."""
+    log.info("speak: attempting (len=%d, preview=%r).", len(text or ""), (text or "")[:80])
     try:
         if await host_client.play_audio(tts.synthesize(text)):
+            log.info("speak: primary path played successfully.")
             return True
-        log.warning("TTS produced no audio for the reply; trying a short fallback.")
+        log.warning("speak: primary path yielded no audio; retrying with stripped version.")
     except Exception as e:  # noqa: BLE001
-        log.warning("TTS/playback failed, trying a short fallback: %s", e)
+        log.warning("speak: primary path raised (%s); retrying with stripped version.", e)
+
+    # Second pass: strip the SAME reply down to plain ASCII so the user still hears it.
+    try:
+        stripped = tts._ascii_fallback(tts._speakable(text or ""))
+        if stripped and await host_client.play_audio(tts.synthesize(stripped)):
+            return True
+    except Exception as e:  # noqa: BLE001
+        log.warning("TTS stripped retry failed: %s", e)
+
+    # Last resort: a short, in-character recovery line. Don't blame the content.
     try:
         return await host_client.play_audio(tts.synthesize(
-            "My apologies — I have the answer on screen, but I can't voice it just now."))
+            "Forgive me, sir — my voice is briefly out of order. Do try again in a moment."))
     except Exception as e:  # noqa: BLE001
-        log.warning("TTS fallback also failed: %s", e)
+        log.warning("TTS final fallback also failed: %s", e)
         return False

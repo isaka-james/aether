@@ -130,18 +130,26 @@ async def command_voice(
     await _progress("transcribing", "Transcribing your voice…")
     try:
         transcript = await asyncio.to_thread(stt.transcribe, raw, suffix)
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         log.exception("transcription failed")
-        # Speak the failure on the host rather than returning a silent 400.
+        # Silent on the host, detailed on the web — the user can read what went wrong and
+        # try again. STT errors aren't something the speakers should narrate.
         result = await orchestrator.speak(
-            "My apologies — I couldn't make out the audio just now. Do try again.",
+            "I didn't catch any audio that time. Do try again.",
+            status="error", ok=False,
+            detail=f"Transcription failed: {type(e).__name__}: {e}. Check the microphone "
+                   "permission and that the recording carried real audio.",
             on_progress=_progress)
         await _notify(result)
         return result
 
     if not transcript:
         result = await orchestrator.speak(
-            "I'm afraid I couldn't make out any speech there.", on_progress=_progress)
+            "I didn't catch any speech in that recording. Try once more.",
+            status="error", ok=False,
+            detail="The transcriber returned an empty string — either the audio was silent, "
+                   "below the VAD threshold, or both online and local recognisers came back blank.",
+            on_progress=_progress)
         await _notify(result)
         return result
 

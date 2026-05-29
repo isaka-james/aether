@@ -37,7 +37,17 @@ function setMode(mode) {
   else setPhase("Tap to speak · hold to talk");
 }
 function setPhase(t, active = false) { const p = $("phase"); p.textContent = t; p.classList.toggle("active", active); }
-function setReply(t) { $("reply").textContent = t; }
+function setReply(t, kind = "") {
+  // kind: ""|"error" — error styles the reply as a calm flash, with optional detail.
+  const r = $("reply");
+  r.textContent = t;
+  r.classList.toggle("flash-error", kind === "error");
+}
+function flashError(summary, detail) {
+  // Detailed, silent flash for failures the host intentionally won't voice. Both summary
+  // and (if present) detail show, so the user has actionable context — not just "oops".
+  setReply(summary + (detail ? "\n\n" + detail : ""), "error");
+}
 
 // ───────── microphone permission (professional flow) ─────────
 async function micState() {
@@ -145,7 +155,10 @@ async function handle(promise) {
     renderResult(data);
   } catch (e) {
     console.error("Aether request failed:", e);
-    setReply("Something went wrong: " + (e && e.message ? e.message : e));
+    // Client-side / transport failure (network, server unreachable, malformed response).
+    // Flash it silently; don't let the browser speak this either — the rule applies to
+    // anything error-shaped, not just backend statuses.
+    flashError("That request didn't reach Aether.", (e && e.message) ? e.message : String(e));
   } finally {
     if (state.mode === "busy") setMode("idle");
   }
@@ -154,7 +167,12 @@ async function handle(promise) {
 function renderResult(res) {
   if (res.transcript) addHistory("user", res.transcript);
   addHistory("bot", res.summary || "(no response)", res);
-  setReply(res.summary || "Done.");
+  // Errors/blocks: silent flash with detail. Anything else: normal reply.
+  if (res.status === "error" || res.status === "blocked") {
+    flashError(res.summary || "Something didn't work.", res.detail);
+  } else {
+    setReply(res.summary || "Done.");
+  }
   maybeSpeak(res);
   if (res.status === "needs_choice") {
     state.choice = { question: res.question, transcript: res.transcript };
@@ -185,8 +203,11 @@ function renderResult(res) {
 
 // The host plays Aether's own voice; res.spoken says whether that succeeded. If it didn't
 // (host audio down or speaking disabled), speak the reply in the browser so a response is
-// never delivered silently. Gated on !res.spoken so we never talk over the host voice.
+// never delivered silently. Gated on !res.spoken so we never talk over the host voice —
+// and gated on the status so error/blocked outcomes stay silent everywhere (the rule:
+// failures flash on the web, they do NOT take over the speakers).
 function maybeSpeak(res) {
+  if (res.status === "error" || res.status === "blocked") return;
   if (res.spoken || !res.summary || !("speechSynthesis" in window)) return;
   try {
     window.speechSynthesis.cancel();
