@@ -33,9 +33,10 @@ So in practice it can do almost anything you could do at the keyboard.
 
 Three things it does on purpose:
 
-- **It knows what works here.** Aether checks which tools are installed on your machine, so if
-  an action needs something that is not set up, it tells you plainly (and that the installer can
-  add it) instead of failing quietly. It can also search for a tool or a file when it needs one.
+- **It knows your machine.** Aether checks your desktop, session type, and which tools are
+  installed, so it adapts to the computer it is on. If an action needs something that is not set
+  up, it tells you plainly (and that the installer can add it) instead of failing quietly. It can
+  also search for a tool or a file when it needs one.
 - **It asks when it is unsure.** If your request could mean a few different things, it shows you
   a short question in the web page and you tap the answer.
 - **It checks before doing anything risky.** Any command that could change or remove things, or
