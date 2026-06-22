@@ -33,7 +33,7 @@ _model: WhisperModel | None = None
 # SpeechRecognition library). Keyless from our side, but shared and rate-limited — hence
 # the local fallback always stays available.
 _GOOGLE_KEY = "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw"
-_GOOGLE_URL = "http://www.google.com/speech-api/v2/recognize"
+_GOOGLE_URL = "https://www.google.com/speech-api/v2/recognize"  # https so audio isn't sent in clear text
 SAMPLE_RATE = 16000
 
 

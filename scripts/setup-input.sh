@@ -3,7 +3,7 @@
 # "an app requests remote control: input devices" portal popup.
 #
 # Why: xdotool drives input through XWayland's XTEST, which KDE Wayland gates behind that
-# portal prompt — an interruption mid-action. ydotool injects events straight into the
+# portal prompt, an interruption mid-action. ydotool injects events straight into the
 # kernel via /dev/uinput (through the ydotoold daemon), which the compositor treats as a
 # real device, so there is NO prompt. The host agent's skills/_input.py prefers ydotool
 # whenever this daemon's socket is reachable.
@@ -29,7 +29,7 @@ SOCKET=/run/ydotoold/socket
 log "Writing /etc/systemd/system/ydotoold.service…"
 cat > /etc/systemd/system/ydotoold.service <<EOF
 [Unit]
-Description=ydotool daemon (uinput input injection for Aether — no portal prompt)
+Description=ydotool daemon (uinput input injection for Aether, no portal prompt)
 Documentation=man:ydotoold(8)
 After=systemd-user-sessions.service
 
@@ -51,7 +51,7 @@ systemctl enable --now ydotoold.service
 
 sleep 1
 if [ -S "$SOCKET" ]; then
-  log "Done. Socket is live at $SOCKET — input simulation now bypasses the portal prompt."
+  log "Done. Socket is live at $SOCKET, input simulation now bypasses the portal prompt."
 else
   echo "[setup-input] WARNING: $SOCKET not present yet; check: systemctl status ydotoold" >&2
   exit 1

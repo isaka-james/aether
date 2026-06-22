@@ -1,4 +1,11 @@
-"""Runtime configuration, loaded from environment variables / .env."""
+"""Runtime configuration, loaded from environment variables / .env.
+
+Everything is overridable via the environment. Backend-only settings use the
+``AETHER_`` prefix (e.g. ``AETHER_LLM_PROVIDER``); a few well-known third-party
+keys are read under their conventional names (``DEEPSEEK_API_KEY``,
+``OPENAI_API_KEY``, ``ANTHROPIC_API_KEY``, ``ROOT_PWD``) so you can paste them in
+the way every other tool expects.
+"""
 from functools import lru_cache
 
 from pydantic import AliasChoices, Field
@@ -8,30 +15,57 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="AETHER_", env_file=".env", extra="ignore")
 
-    # --- Auth ---
+    # --- Auth (single user) ---
     username: str = "admin"
     password: str = "changeme"  # plaintext here; hashed in memory at startup
     jwt_secret: str = "please-change-this-long-random-secret"
     jwt_expire_minutes: int = 60 * 24 * 7  # one week
 
-    # --- LLM: DeepSeek (OpenAI-compatible cloud API) ---
-    deepseek_api_key: str = Field(default="", validation_alias="DEEPSEEK_KEY")
-    deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_model: str = "deepseek-chat"       # V3 (fast); use "deepseek-reasoner" for R1
-    llm_temperature: float = 0.1
+    # --- Reasoning LLM (provider-agnostic) ---------------------------------
+    # Aether's "brain" is pluggable. Pick a provider; the rest is inferred from
+    # sensible per-provider defaults that you can still override.
+    #   deepseek           -> DeepSeek cloud (OpenAI-compatible) — the default
+    #   openai             -> OpenAI cloud
+    #   anthropic          -> Anthropic Claude (native Messages API)
+    #   local | openai-compatible -> any OpenAI-compatible server (Ollama,
+    #                        LM Studio, llama.cpp, vLLM, Groq, OpenRouter, …)
+    llm_provider: str = "deepseek"
+    # Override the provider's default model / base URL when you need to. Empty
+    # means "use the provider preset" (see llm.PROVIDERS).
+    llm_model: str = ""
+    llm_base_url: str = ""
+    llm_temperature: float = 0.1     # ignored by providers that don't accept it (e.g. Claude Opus)
     llm_timeout: float = 60.0
+    llm_max_tokens: int = 1024       # cap on a single reasoning step's output
+
+    # Per-provider API keys, read under their conventional names so they drop in
+    # straight from each provider's dashboard. A request only needs the key for
+    # the provider you actually selected; local servers usually need none.
+    deepseek_api_key: str = Field(default="", validation_alias="DEEPSEEK_API_KEY")
+    openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY")
+    anthropic_api_key: str = Field(default="", validation_alias="ANTHROPIC_API_KEY")
+    # Generic fallback key for a custom/local OpenAI-compatible endpoint.
+    llm_api_key: str = ""            # AETHER_LLM_API_KEY
+
+    # --- Who Aether is assisting (personalises greetings & grounding) ------
+    # Open-source friendly: nothing here is hard-coded to one machine. Fill these
+    # in (or leave blank) — they only colour how the assistant addresses you and
+    # where it assumes "here" is.
+    user_name: str = ""              # AETHER_USER_NAME, e.g. "Alex"
+    user_city: str = ""              # AETHER_USER_CITY, e.g. "Nairobi"
+    user_country: str = ""           # AETHER_USER_COUNTRY, e.g. "Kenya"
 
     # --- User content locations (the host paths the agent's skills operate on) ---
-    # Kept in sync with the host agent's AETHER_MUSIC_DIR / AETHER_PROJECTS_DIR; used to
-    # tell the model where the user's files live.
+    # Generic defaults; override to point at wherever your files actually live.
+    # Kept in sync with the host agent's AETHER_MUSIC_DIR / AETHER_PROJECTS_DIR.
     music_dir: str = "~/Music"
     projects_dir: str = "~/Projects"
-    # IANA timezone (e.g. "Africa/Dar_es_Salaam") used to ground the model's sense of the
+    # IANA timezone (e.g. "Europe/Berlin") used to ground the model's sense of the
     # current date/time. Empty -> the backend's local zone. Reads AETHER_TZ or plain TZ.
     timezone: str = Field(default="", validation_alias=AliasChoices("AETHER_TZ", "TZ"))
 
     # --- Host agent (runs natively on the host: executes commands, plays audio) ---
-    host_agent_url: str = "http://host.docker.internal:8765"
+    host_agent_url: str = "http://host.docker.internal:8474"
     host_agent_token: str = "please-change-this-shared-secret"
     host_agent_timeout: float = 120.0
 
@@ -55,12 +89,6 @@ class Settings(BaseSettings):
     kokoro_speed: float = 1.0
     kokoro_lang: str = "en-us"
 
-    # --- N.E.W.S. integration (personal news briefing service) ---
-    # Aether reaches the n.e.w.s nginx on the host via the docker host-gateway.
-    news_url: str = "http://host.docker.internal:4291/api"
-    news_email: str = ""       # AETHER_NEWS_EMAIL — your n.e.w.s account
-    news_password: str = ""    # AETHER_NEWS_PASSWORD
-
     # --- Privileged execution ---
     # The host root password (env var ROOT_PWD, not AETHER_-prefixed). When a command
     # needs root, it is sent to the web client for approval; on approval the host agent
@@ -74,7 +102,6 @@ class Settings(BaseSettings):
     redis_url: str = ""          # e.g. redis://redis:6379/0
     context_ttl: int = 600       # seconds of follow-up conversation memory kept in Redis
     context_turns: int = 6       # how many recent turns to replay into the model
-    news_cache_ttl: int = 300    # seconds to cache the news briefing
     notify_poll_interval: float = 12.0  # how often the backend pulls new host notifications
 
     # --- Behavior ---

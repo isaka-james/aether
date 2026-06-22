@@ -3,7 +3,7 @@
 #
 # We drive your *real* system Google Chrome over the DevTools protocol (CDP); Playwright
 # is used purely as the CDP client (connect_over_cdp), so there is NO bundled-browser
-# download — no `playwright install`. Playwright lives in a project-local venv at
+# download, no `playwright install`. Playwright lives in a project-local venv at
 # host-agent/.venv so the stdlib-only agent core stays untouched. Re-runnable.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,4 +22,4 @@ if ! command -v google-chrome >/dev/null 2>&1 && [ ! -x "${AETHER_CHROME_BIN:-/u
   log "      sudo apt install ./google-chrome-stable_current_amd64.deb"
 fi
 
-log "Done — YouTube playback is ready. Try: 'play <song> on youtube'."
+log "Done, YouTube playback is ready. Try: 'play <song> on youtube'."

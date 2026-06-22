@@ -11,11 +11,11 @@ log "Starting Docker backend (FastAPI + Postgres + Redis)…"
 start_backend
 
 if healthy; then
-  log "Host agent already running on :$PORT — nothing to do."
+  log "Host agent already running on :$PORT, nothing to do."
   exit 0
 fi
 
-[ -n "$(read_env AETHER_HOST_AGENT_TOKEN)" ] || log "WARNING: no AETHER_HOST_AGENT_TOKEN in .env — using default token."
+[ -n "$(read_env AETHER_HOST_AGENT_TOKEN)" ] || log "WARNING: no AETHER_HOST_AGENT_TOKEN in .env, using default token."
 log "Starting host agent (logs: $LOG)…"
 start_agent_detached
 
@@ -23,5 +23,5 @@ for _ in $(seq 1 10); do
   healthy && { log "Host agent is up on :$PORT (pid $(cat "$PIDFILE"))."; exit 0; }
   sleep 0.5
 done
-log "Host agent did not report healthy yet — check $LOG."
+log "Host agent did not report healthy yet, check $LOG."
 exit 1

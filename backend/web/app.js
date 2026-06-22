@@ -312,3 +312,11 @@ function showApp() {
 }
 if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
 if (state.token) showApp(); else { $("login").classList.remove("hidden"); $("app").classList.add("hidden"); }
+
+// Make Aether installable as an app (Install / Add to Home Screen). The service worker only
+// runs on a secure context (https or localhost), so it quietly does nothing on plain http.
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch((e) => console.warn("SW register failed:", e));
+  });
+}

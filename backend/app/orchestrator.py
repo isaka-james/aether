@@ -20,7 +20,7 @@ import re
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Optional
 
-from . import cache, db, host_client, llm, news, tts
+from . import cache, db, host_client, llm, tts
 from .config import get_settings
 from .models import Action, Clarification, CommandResult
 from .safety import classify_command
@@ -38,7 +38,7 @@ _SUDO = re.compile(r"\bsudo\b")
 # A capable cloud model (DeepSeek) drives the loop, so give it room to investigate state,
 # resolve a conflict, act, and verify — a smart multi-step chain shouldn't get truncated.
 MAX_STEPS = 9
-OBS_LIMIT = 4000  # generous enough that a full multi-layer news briefing isn't chopped mid-JSON
+OBS_LIMIT = 4000  # generous enough that a long multi-item observation isn't chopped mid-JSON
 # Voiced when the model returns nothing usable — better a graceful line than silence.
 FALLBACK_REPLY = "I'm afraid I've come up short on that one, sir."
 
@@ -63,11 +63,11 @@ def _should_speak(result: "CommandResult") -> bool:
         return False
     return True
 
-AGENT_SYSTEM = """You are Aether, a capable assistant that controls a Linux KDE computer.
+AGENT_SYSTEM = """You are Aether, a capable assistant that controls a Linux KDE computer.{user}
 
 Right now it is {context}. Treat this as ground truth for anything time- or date-related
-(what day it is, "this morning/tonight", "today's" news, how long until something) — never
-guess the date, and tailor greetings and phrasing to the actual time of day.
+(what day it is, "this morning/tonight", how long until something) — never guess the date,
+and tailor greetings and phrasing to the actual time of day.
 
 Reach the user's goal by calling tools — ONE per turn. Each turn output ONE JSON object:
   • {"thought":"<brief private reasoning / plan>", "tool":"<name>","params":{...}}   to run a tool
@@ -140,7 +140,7 @@ the literal words. These principles apply to EVERY skill, not only the examples 
   (facts, explanations, how-to, advice, definitions, maths, language, a bit of conversation),
   just ANSWER directly with {"final":"..."} from your own knowledge; don't force a tool and
   don't refuse something you can simply answer. Reserve tools for acting on THIS computer or
-  reading its live state (what's open/playing, the weather, the news, the user's files). If a
+  reading its live state (what's open/playing, the weather, the user's files). If a
   question needs current real-world facts you can't know, say so plainly rather than guessing.
 - Treat the user's words as intent, not a literal spec. Speech-to-text is imperfect and the
   phrasing is often rough — reinterpret it charitably into what they most likely meant, refine
@@ -163,20 +163,13 @@ Recipes (these show the pattern; bring the same judgement to everything):
   the project path in their title), and run_command "pgrep -fa 'node|vite|npm|python|cargo|
   docker'" to find running dev servers. Combine both, then answer specifically (name the
   project from the window title if you can).
-- "What's the news / my briefing / what's happening today?" → call get_news (the user's
-  personal N.E.W.S. briefing), then deliver a short SPOKEN briefing: a few sentences
-  walking the top items area by area (the layers run from close to home outward to the
-  world; don't just name one headline, and don't read every item verbatim). This is one of
-  the cases where a slightly longer answer is right. If get_news comes back ok:false — the
-  service is offline, the login was rejected, or it isn't set up — do NOT fall silent or
-  retry it blindly: tell the user plainly and briefly, in your own voice, what went wrong.
 - "What's the weather / will it rain / do I need a jacket?" → weather (no args uses their
   KDE-configured location; pass location only when they name a different place). Answer the
   actual question — for "do I need a jacket / umbrella" decide from the conditions and say so.
 - "Good morning" / "brief me" / "what's my day look like?" → this is a plan: greet them for
-  the actual time of day, then gather the pieces that fit a briefing — weather, the news
-  (get_news), and anything pending (notifications) — and weave them into one short, natural
-  spoken rundown. Don't dump raw tool output; synthesise it.
+  the actual time of day, then gather the pieces that fit a briefing — the weather and
+  anything pending (notifications) — and weave them into one short, natural spoken rundown.
+  Don't dump raw tool output; synthesise it.
 - "Play <anything>" — a song, an artist, a mood, a video, a channel's latest, a clip: ANY
   "play X" request goes to YouTube. ALWAYS use play_youtube; do NOT browse or play the local
   library even if a copy exists there — the user wants everything streamed from YouTube.
@@ -185,7 +178,7 @@ Recipes (these show the pattern; bring the same judgement to everything):
   you do NOT need to stop first: calling play_youtube again SWAPS the new one into the SAME
   Chrome session (it does not relaunch the browser). Use stop_youtube only when the user
   actually wants playback to END.
-    • a song → artist + title ("play nataka kulewa" → query "nataka kulewa"; "play some
+    • a song → artist + title ("play blinding lights" → query "blinding lights"; "play some
       kendrick lamar gnx album" → "kendrick lamar gnx").
     • a video / channel / latest → keep the phrasing that finds it ("play mr beast latest
       video" → "mrbeast latest", "play fish13" → "fish13").
@@ -260,6 +253,22 @@ def _now_context() -> str:
             pass
     tz = now.strftime("%Z")
     return now.strftime("%A, %d %B %Y, %H:%M") + (f" ({tz})" if tz else "")
+
+
+def _user_context() -> str:
+    """A short line naming who Aether is assisting and where, from AETHER_USER_* config.
+    Returns "" (and the prompt reads generically) when nothing is set — open-source default."""
+    s = get_settings()
+    name = (s.user_name or "").strip()
+    where = ", ".join(p for p in ((s.user_city or "").strip(), (s.user_country or "").strip()) if p)
+    if name and where:
+        return (f" You are assisting {name}, who is based in {where}. Use their name "
+                "occasionally and naturally, and treat that location as 'here' for local matters.")
+    if name:
+        return f" You are assisting {name}. Use their name occasionally and naturally."
+    if where:
+        return f" The user is based in {where}; treat that location as 'here' for local matters."
+    return ""
 
 
 async def _emit(on_progress: Progress, step: str, label: str) -> None:
@@ -369,6 +378,7 @@ async def handle(text: str, *, transcript: str | None = None,
     session = session or "default"
     system = (AGENT_SYSTEM
               .replace("{context}", _now_context())
+              .replace("{user}", _user_context())
               .replace("{persona}", llm.PERSONA)
               .replace("{catalog}", catalog_for_prompt())
               .replace("{music_dir}", s.music_dir)
@@ -492,9 +502,6 @@ async def _loop(messages: list[dict], transcript: str | None, on_progress: Progr
                 else:
                     await _emit(on_progress, "executing", f"Running: {command[:60]}")
                     result = await host_client.execute("run_command", params)
-            elif tool == "get_news":
-                await _emit(on_progress, "executing", "Fetching your news briefing…")
-                result = await news.get_briefing()   # handled by the backend, not the host agent
             elif tool in _BACKEND_TOOLS:
                 await _emit(on_progress, "executing", f"Looking that up ({tool})…")
                 result = await _backend_tool(tool, params)

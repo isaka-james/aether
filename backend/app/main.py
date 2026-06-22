@@ -3,6 +3,7 @@ notifications over WebSocket, and the static web client.
 """
 import asyncio
 import logging
+import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from fastapi import (Depends, FastAPI, File, HTTPException, UploadFile,
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import cache, db, notifications, orchestrator, stt
+from . import cache, db, llm, notifications, orchestrator, stt
 from .auth import create_token, decode_token, require_user, verify_credentials
 from .config import get_settings
 from .models import (ApproveCommand, CommandResult, LoginRequest, TextCommand,
@@ -21,6 +22,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 log = logging.getLogger("aether")
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+# Serve the PWA manifest with the correct type so browsers offer to install the app.
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 
 @asynccontextmanager
@@ -161,8 +164,8 @@ async def command_voice(
 
 # Shown as suggestion chips before any history exists (or if the DB is off).
 _DEFAULT_SUGGESTIONS = [
-    "play nataka kulewa", "what's the weather", "brief me on the news",
-    "make the video full screen", "how many windows are open", "lock the screen",
+    "play lofi hip hop on youtube", "what's the weather", "lock the screen",
+    "make the video full screen", "how many windows are open", "how much RAM is free",
 ]
 
 
@@ -180,8 +183,7 @@ async def suggestions(user: str = Depends(require_user)):
 @app.get("/api/health")
 async def health():
     s = get_settings()
-    return {"ok": True, "provider": "deepseek", "model": s.deepseek_model,
-            "llm_configured": bool(s.deepseek_api_key), "voice": s.kokoro_voice,
+    return {"ok": True, "llm": llm.provider_info(), "voice": s.kokoro_voice,
             "whisper": s.whisper_model, "database": db.enabled(), "redis": cache.enabled()}
 
 
@@ -206,6 +208,12 @@ async def ws_notifications(ws: WebSocket, token: str = ""):
 @app.get("/")
 async def index():
     return FileResponse(WEB_DIR / "index.html")
+
+
+@app.get("/sw.js")
+async def service_worker():
+    # Served from the root so the service worker can control the whole app (PWA install).
+    return FileResponse(WEB_DIR / "sw.js", media_type="application/javascript")
 
 
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")

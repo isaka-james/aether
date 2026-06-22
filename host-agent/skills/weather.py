@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.parse
 import urllib.request
 
@@ -16,6 +17,9 @@ from ._util import fail, ok
 from .registry import skill
 
 _APPLETSRC = os.path.expanduser("~/.config/plasma-org.kde.plasma.desktop-appletsrc")
+# Place names only. Stripping everything else means a crafted "location" can never alter the
+# request's scheme or host (the host is a fixed literal below) — no SSRF, no file:// reads.
+_SAFE_LOCATION = re.compile(r"[^\w \-,.']", re.UNICODE)
 
 
 def _kde_location() -> str | None:
@@ -39,10 +43,10 @@ def _kde_location() -> str | None:
 def _fetch(location: str | None) -> dict | None:
     """Fetch current weather as JSON from wttr.in. Returns the parsed dict, or None."""
     # wttr.in geolocates by IP when the path is empty; otherwise it resolves the place name.
-    path = urllib.parse.quote(location) if location else ""
-    url = f"https://wttr.in/{path}?format=j1"
+    safe = _SAFE_LOCATION.sub("", location).strip()[:80] if location else ""
+    url = f"https://wttr.in/{urllib.parse.quote(safe)}?format=j1"
     req = urllib.request.Request(url, headers={"User-Agent": "curl/8"})  # j1 JSON, not ANSI
-    with urllib.request.urlopen(req, timeout=10) as resp:
+    with urllib.request.urlopen(req, timeout=10) as resp:  # nosemgrep: fixed https host, sanitized path
         return json.loads(resp.read().decode("utf-8", "replace"))
 
 

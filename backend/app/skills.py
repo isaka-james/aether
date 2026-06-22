@@ -30,8 +30,11 @@ SKILLS: list[Skill] = [
     Skill("get_brightness", "Report the current screen brightness as a percentage.", "none"),
     Skill("brightness", "Set screen brightness.", '{"level": 0-100}'),
     # --- Audio / media ---
-    Skill("set_volume", "Change or mute the audio volume.",
+    Skill("set_volume", "Change or mute the system audio output volume.",
           '{"level": 0-100}  OR  {"action": "mute|unmute|up|down"}'),
+    Skill("mic", "Mute, unmute, or toggle the microphone (the default input source). Use for "
+                 "'mute my mic', 'unmute the microphone', 'am I muted'.",
+          '{"action": "mute|unmute|toggle"}'),
     Skill("media_control", "Play/pause/skip the current media player.",
           '{"action": "playpause|play|pause|next|previous|stop"}'),
     Skill("now_playing", "Say what song/media is currently playing.", "none"),
@@ -113,9 +116,6 @@ SKILLS: list[Skill] = [
                            "'read my notifications'.", '{} (recent)  OR  {"limit": 20}'),
     Skill("clear_notifications", "Forget all the notifications the agent has recorded so far.", "none"),
     Skill("notify", "Show a desktop notification.", '{"message": "text"}'),
-    Skill("get_news", "Fetch the user's personal news briefing (today's headlines by area) "
-                      "from their N.E.W.S. service. Use for 'what's the news', 'my briefing', etc.",
-          "none"),
     Skill("weather", "Current weather and today's outlook for the user's location (read from "
                      "their KDE weather widget) or a named place. Use for 'what's the weather', "
                      "'will it rain', 'do I need a jacket', and as part of a morning briefing.",

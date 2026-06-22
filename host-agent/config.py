@@ -8,7 +8,7 @@ TOKEN = os.environ.get("AETHER_HOST_AGENT_TOKEN", "please-change-this-shared-sec
 # gateway. Pair with the shared token (and ideally a firewall rule limiting the
 # port to the docker bridge) — see host-agent/README.md.
 HOST = os.environ.get("AETHER_AGENT_HOST", "0.0.0.0")
-PORT = int(os.environ.get("AETHER_AGENT_PORT", "8765"))
+PORT = int(os.environ.get("AETHER_AGENT_PORT", "8474"))
 
 # Max seconds any single host command may run.
 COMMAND_TIMEOUT = float(os.environ.get("AETHER_AGENT_CMD_TIMEOUT", "20"))

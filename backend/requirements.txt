@@ -1,13 +1,22 @@
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
-python-multipart==0.0.20
+fastapi==0.138.0
+uvicorn[standard]==0.49.0
+python-multipart==0.0.32        # security: fixes the multipart DoS / file-write / smuggling CVEs
+starlette==1.3.1                # security: pinned floor (FastAPI's web core; clears starlette CVEs)
 httpx==0.28.1
+
+# Reasoning LLM clients (provider chosen at runtime via AETHER_LLM_PROVIDER).
+# Range pins: both SDKs keep a stable surface within these bounds, so a fresh
+# build picks up patches without breaking. openai also serves DeepSeek + any
+# local/OpenAI-compatible server; anthropic serves Claude.
+openai>=1.50,<2
+anthropic>=0.40,<1
+
 faster-whisper==1.1.1
-requests==2.32.3
+requests==2.34.2                 # security: .netrc leak + later CVEs fixed
 kokoro-onnx==0.4.7
 soundfile==0.13.0
 numpy==2.2.1
-PyJWT==2.10.1
+PyJWT==2.13.0                    # security: algorithm-confusion / DoS / SSRF JWK CVEs fixed
 bcrypt==4.2.1
 pydantic==2.10.4
 pydantic-settings==2.7.1
