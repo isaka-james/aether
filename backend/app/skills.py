@@ -57,7 +57,7 @@ SKILLS: list[Skill] = [
                           "video, a channel's latest, a clip, anything. Use a clean query "
                           "(artist+title, or e.g. 'mrbeast latest'). Do not use local music "
                           "unless the user explicitly says 'my local/library/files'.",
-          '{"query": "nataka kulewa"}  OR  {"query": "mrbeast latest video"}'),
+          '{"query": "the weeknd blinding lights"}  OR  {"query": "mrbeast latest video"}'),
     Skill("stop_youtube", "End the YouTube playback in Chrome entirely. Only for 'stop the "
                           "video/music' — to switch to a different song/video just call "
                           "play_youtube again (it swaps in the same browser; no need to stop).",
