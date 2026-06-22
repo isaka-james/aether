@@ -4,7 +4,7 @@
 
 **Talk to your computer. It listens, and it acts.**
 
-Aether is a self hosted voice assistant for your KDE Linux desktop. Speak or type from your
+Aether is a self hosted voice assistant for your Linux desktop. Speak or type from your
 phone, laptop, or tablet, and it runs things on your machine and talks back. You choose the AI
 model behind it, and everything stays on your computer unless you decide otherwise.
 
@@ -19,25 +19,29 @@ stuff feels like a small luxury.
 
 Just say what you want. A few examples:
 
-- "Lock the screen", or "unlock it" (works just as well from a cabin in Alaska)
+- "Lock the screen", or "unlock it" 
 - "Play some jazz on YouTube", "turn the video down", "skip this", "stop"
 - "Read my notifications"
 - "Set the volume to 20", "mute my mic"
 - "Dim the screen to 30"
 - "Find my budget spreadsheet"
+- "Open github.com", or "open my downloads folder"
+- "Copy this to the clipboard", or "what's on my clipboard?"
+- "Take a photo with the webcam"
 - "How much RAM is free?", "what's my battery?", "am I on wifi?"
 - "Open Chrome", "how many windows are open?", "close this tab"
 - "What's the weather? Do I need a jacket?"
 
 This is just a taste. Aether is a real agent, not a fixed list of commands. When there is no
-ready made action for something, it looks around your machine and runs the right commands
-itself, so it can do far more than the examples above. When it is unsure it asks you a quick
-question in the web page, and anything risky waits for your approval first. Full list in
-[docs/CAPABILITIES.md](docs/CAPABILITIES.md).
+ready made action for something, it looks around your machine, finds the right tool, and runs
+it, so it can do far more than the examples above. It also knows which tools are installed
+here, so if something needs setting up it tells you plainly instead of failing. When it is
+unsure it asks you a quick question in the web page, and anything risky waits for your approval
+first. Full list in [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
 
 ## Install
 
-From inside your KDE session, open a terminal and run:
+From inside your desktop session, open a terminal and run:
 
 ```bash
 git clone https://github.com/isaka-james/aether && cd aether
@@ -49,6 +53,19 @@ starts everything and shows you the link to open. It also sets Aether to start e
 log in, so it is always there. The first run downloads a few things and takes a few minutes.
 
 To remove it later: `bash scripts/uninstall.sh`.
+
+## Updating
+
+To get the latest version, from the project folder run:
+
+```bash
+bash scripts/update.sh
+```
+
+It pulls the new code, keeps your settings and data, rebuilds the backend, and restarts the
+assistant. Your downloaded voice models, history, and favourites stay where they are. The
+database updates its own structure automatically, so an update never breaks your data. If a new
+setting was added, it is appended to your `.env` with a sensible default so you can tweak it.
 
 ## Use it
 
@@ -94,7 +111,8 @@ you plan to open it to the internet, read [docs/SECURITY.md](docs/SECURITY.md) f
 
 ## What you need
 
-- A KDE Plasma desktop on Linux
+- A Linux desktop. KDE, GNOME, XFCE, and others all work, and the installer adds the tools
+  yours needs. KDE Plasma gets the most polish.
 - Docker
 - Google Chrome (only for the YouTube features)
 - An AI key from DeepSeek, OpenAI, or Claude, or a model running locally (no key needed)

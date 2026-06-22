@@ -1,8 +1,9 @@
-"""KWin scripting helper — the reliable way to inspect/act on windows under Wayland.
+"""Window inspection and control, portable across desktops.
 
-We load a small JS script into KWin via DBus, run it, and read its ``print()`` output
-back from the user journal (tagged with a per-call nonce). This sees native Wayland
-windows that X11 tools (wmctrl/xdotool) cannot.
+On KDE it loads a small JS script into KWin over DBus and reads its ``print()`` output back
+from the user journal (tagged with a per-call nonce); this sees native Wayland windows that
+X11 tools cannot. On other desktops it falls back to wmctrl over X11 / XWayland, so listing,
+closing, and focusing windows work on GNOME, XFCE, MATE, Cinnamon, and the rest.
 """
 from __future__ import annotations
 
@@ -74,8 +75,8 @@ _ITER = ('var ws=(typeof workspace.windowList==="function")?workspace.windowList
          '(typeof workspace.clientList==="function")?workspace.clientList():[];')
 
 
-def list_windows() -> list[dict]:
-    """Return [{app, title}] for normal, taskbar-visible windows."""
+def _kwin_list() -> list[dict]:
+    """KWin-scripting listing (KDE; sees native Wayland windows too)."""
     nonce = "AW" + secrets.token_hex(4)
     body = (_ITER + 'ws.forEach(function(w){if(w&&w.normalWindow&&!w.skipTaskbar){'
             f'print("{nonce}|"+(w.resourceClass||"?")+"|"+(w.caption||""));}}}});')
@@ -87,9 +88,7 @@ def list_windows() -> list[dict]:
     return wins
 
 
-def act_on_window(match: str, action: str) -> int:
-    """close or focus windows whose caption/class contains `match` (case-insensitive).
-    Returns the number of matched windows."""
+def _kwin_act(match: str, action: str) -> int:
     nonce = "AA" + secrets.token_hex(4)
     m = match.lower().replace('"', '')
     verb = ("w.closeWindow();" if action == "close"
@@ -102,3 +101,44 @@ def act_on_window(match: str, action: str) -> int:
         if len(parts) == 2 and parts[1].strip().isdigit():
             return int(parts[1].strip())
     return 0
+
+
+def _wmctrl_list() -> list[dict]:
+    """Portable X11 / XWayland listing via wmctrl. Works on GNOME, XFCE, MATE, Cinnamon, etc."""
+    if not has("wmctrl"):
+        return []
+    rc, out, _ = run(["wmctrl", "-lx"])
+    if rc != 0:
+        return []
+    wins = []
+    for line in out.splitlines():
+        parts = line.split(None, 4)          # id, desktop, WM_CLASS, host, title
+        if len(parts) < 4:
+            continue
+        app = parts[2].split(".")[0].lower()  # WM_CLASS instance, matches resourceClass
+        title = parts[4].strip() if len(parts) == 5 else ""
+        wins.append({"app": app, "title": title, "_id": parts[0]})
+    return wins
+
+
+def _wmctrl_act(match: str, action: str) -> int:
+    flag = "-ic" if action == "close" else "-ia" if action == "focus" else None
+    if flag is None:
+        return 0
+    t = match.lower()
+    n = 0
+    for w in _wmctrl_list():
+        if t in (w["title"] + " " + w["app"]).lower():
+            run(["wmctrl", flag, w["_id"]])
+            n += 1
+    return n
+
+
+def list_windows() -> list[dict]:
+    """Open windows as [{app, title}]. Uses KWin on KDE (incl. native Wayland), wmctrl elsewhere."""
+    return _kwin_list() or _wmctrl_list()
+
+
+def act_on_window(match: str, action: str) -> int:
+    """Close or focus windows matching `match`. Tries KWin, then wmctrl. Returns the count acted on."""
+    return _kwin_act(match, action) or _wmctrl_act(match, action)

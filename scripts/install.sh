@@ -2,12 +2,12 @@
 # ============================================================================
 #  Aether installer
 # ============================================================================
-# One command to set Aether up on your KDE desktop. It asks a few simple
+# One command to set Aether up on your Linux desktop. It asks a few simple
 # questions, writes your settings, and starts everything. Safe to run again.
 #
 #   bash scripts/install.sh
 #
-# Run it from inside your KDE session (open a Konsole window) so the assistant
+# Run it from inside your desktop session (open a terminal) so the assistant
 # can reach your screen, sound, and apps.
 set -uo pipefail
 
@@ -26,7 +26,7 @@ ask()  { local p="$1" d="${2:-}" a; read -r -p "$(printf '%s%s%s ' "$B" "$p" "$N
 yes()  { local a; a="$(ask "$1" "$2")"; case "$a" in y|Y|yes|YES) return 0;; *) return 1;; esac; }
 
 printf '\n%s  Aether installer%s\n' "$B" "$N"
-printf '  Your own voice assistant for KDE. Lets get it running.\n'
+printf '  Your own voice assistant for Linux. Lets get it running.\n'
 
 # --- 1. Prerequisites -------------------------------------------------------
 say "Step 1 of 4   Checking what you need"
@@ -37,6 +37,7 @@ have python3 || { err "python3 is not installed."; MISSING=1; }
 have openssl || { err "openssl is not installed (needed to make passwords)."; MISSING=1; }
 [ "$MISSING" -eq 0 ] || { err "Please install the items above, then run this again."; exit 1; }
 have google-chrome || have google-chrome-stable || have chromium || warn "Google Chrome was not found. It is only needed for playing YouTube."
+ok "Desktop detected: ${XDG_CURRENT_DESKTOP:-unknown} (${XDG_SESSION_TYPE:-unknown} session)"
 
 # --- 2. Your settings -------------------------------------------------------
 say "Step 2 of 4   Your account and AI model"
@@ -103,6 +104,7 @@ ok "Settings saved"
 # --- 3. What to set up (your choices) ---------------------------------------
 say "Step 3 of 4   What would you like to set up?"
 printf '  Press Enter to accept the suggestion in capitals.\n\n'
+OPT_DEPS=no; yes 'Install the desktop tools Aether needs to control your computer? Needs sudo. [Y/n]:' y && OPT_DEPS=yes
 OPT_YT=no; [ -d "$ROOT/host-agent/.venv" ] && OPT_YT=skip
 if [ "$OPT_YT" != skip ] && yes 'Play music and videos on YouTube? [Y/n]:' y; then OPT_YT=yes; fi
 OPT_INPUT=no; yes 'Smooth typing on Wayland without permission popups? Needs your sudo password. [y/N]:' n && OPT_INPUT=yes
@@ -112,6 +114,10 @@ OPT_NOW=no;   yes 'Start Aether right now? [Y/n]:' y && OPT_NOW=yes
 # --- 4. Apply ---------------------------------------------------------------
 say "Step 4 of 4   Setting things up"
 chmod +x "$ROOT/scripts/"*.sh 2>/dev/null || true
+
+if [ "$OPT_DEPS" = yes ]; then
+  bash "$ROOT/scripts/setup-desktop.sh" && ok "Desktop tools installed" || warn "Some desktop tools could not be installed. See the messages above."
+fi
 
 if [ "$OPT_YT" = yes ]; then
   bash "$ROOT/scripts/setup-browser.sh" >/dev/null 2>&1 && ok "YouTube playback ready" || warn "YouTube setup did not finish. You can run scripts/setup-browser.sh later."

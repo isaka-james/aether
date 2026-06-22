@@ -80,6 +80,9 @@ SKILLS: list[Skill] = [
     Skill("list_projects", "List the user's code projects (folders under ~/Projects).", "none"),
     # --- Apps ---
     Skill("open_app", "Launch a desktop application.", '{"app": "google-chrome|konsole|dolphin|..."}'),
+    Skill("open_url", "Open a website, link, file, or folder in its default app. Use for 'open "
+                      "github.com', 'open my downloads folder', 'open this file'.",
+          '{"url": "github.com"}  OR  {"url": "~/Downloads"}'),
     Skill("close_app", "Close/quit a running application (e.g. a browser and all its tabs).",
           '{"app": "google-chrome|konsole|..."}'),
     Skill("running_apps", "List applications that currently have open windows.", "none"),
@@ -100,8 +103,9 @@ SKILLS: list[Skill] = [
     Skill("set_input_device", "Enable or disable an input device (e.g. the touchpad).",
           '{"device": "name", "state": "enable|disable"}'),
     # --- System ---
-    Skill("system_info", "Report system stats: RAM, CPU load, disk, or battery.",
-          '{"what": "ram|cpu|disk|battery|all"}'),
+    Skill("system_info", "Report system info: RAM, CPU load, disk, battery, or the machine "
+                         "itself (distro, desktop environment, session type, hostname).",
+          '{"what": "ram|cpu|disk|battery|system|all"}'),
     Skill("power_profile", "Get or set the power profile.",
           '{"profile": "power-saver|balanced|performance"}  (omit profile to just report it)'),
     Skill("screenshot", "Take a full-screen screenshot.", "none"),
@@ -142,6 +146,18 @@ SKILLS: list[Skill] = [
     Skill("play_history", "What the user has played most (recently/overall). Use for 'what do I "
                           "listen to', 'play something I play a lot'.",
           '{} OR {"source": "youtube|music", "limit": 5}'),
+    # --- Discovery & extras ---
+    Skill("capabilities", "List what actions actually work on this machine right now (which "
+                          "tools are installed). Use when unsure whether something is supported here.",
+          "none"),
+    Skill("find_tool", "Search the installed programs for ones matching a keyword, to discover a "
+                       "tool before using it (e.g. 'pdf', 'screenshot', 'convert').",
+          '{"query": "pdf"}'),
+    Skill("find_files", "Search the user's files by name (home folder by default).",
+          '{"query": "resume"}  (+ optional "dir": "~/Documents")'),
+    Skill("clipboard", "Read the clipboard, or copy text to it.",
+          '{"action": "get"}  OR  {"action": "set", "text": "the text"}'),
+    Skill("camera", "Take a photo with the webcam and save it.", "none"),
     # --- Escape hatches ---
     Skill("run_command", "Run a shell command on the host. Use READ-ONLY commands (ps, pgrep, "
                          "ls, cat, grep, df, uptime, …) freely to investigate; they run "

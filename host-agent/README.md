@@ -1,7 +1,7 @@
 # Aether host agent
 
 A tiny, **dependency-free** (Python 3 stdlib only) HTTP service that runs natively in
-your KDE session. It is the only component that touches the host. The Dockerized
+your desktop session. It is the only component that touches the host. The Dockerized
 backend sends it validated skills to execute and synthesized speech to play.
 
 ## Why a separate agent?
@@ -15,7 +15,7 @@ is broad while the surface stays narrow, and never raw container access to your 
 
 It also runs a **notification recorder** (`notify_recorder.py`): a background thread that
 watches the session bus with `dbus-monitor` and records desktop notifications as they fire
-(KDE exposes no API to read notification *history*, so live capture is the only way). The
+(desktops expose no API to read notification *history*, so live capture is the only way). The
 `notifications` skill reads them back. Still stdlib-only. `dbus-monitor` is a system tool,
 and it's a graceful no-op if there's no session bus.
 

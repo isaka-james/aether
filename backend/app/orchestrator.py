@@ -17,6 +17,7 @@ An optional on_progress(step, label) async callback drives the web client's phas
 import json
 import logging
 import re
+import time
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Optional
 
@@ -63,11 +64,13 @@ def _should_speak(result: "CommandResult") -> bool:
         return False
     return True
 
-AGENT_SYSTEM = """You are Aether, a capable assistant that controls a Linux KDE computer.{user}
+AGENT_SYSTEM = """You are Aether, a capable assistant that controls a Linux desktop computer.{user}
 
 Right now it is {context}. Treat this as ground truth for anything time- or date-related
 (what day it is, "this morning/tonight", how long until something) — never guess the date,
 and tailor greetings and phrasing to the actual time of day.
+
+{machine}
 
 Reach the user's goal by calling tools — ONE per turn. Each turn output ONE JSON object:
   • {"thought":"<brief private reasoning / plan>", "tool":"<name>","params":{...}}   to run a tool
@@ -225,12 +228,19 @@ Recipes (these show the pattern; bring the same judgement to everything):
   user asks for their "usual/favourite" setting ("set it to my usual volume") → get_preference
   to recall the number, then apply it (set_volume / youtube_volume). Don't invent the value.
 - For admin actions, use run_command with a command starting with "sudo" (user approves).
+- Discover what's possible instead of guessing. To check what works on THIS machine call
+  capabilities; to find an installed program for a need call find_tool "<keyword>" (e.g.
+  "pdf", "convert") then use it. find_files locates the user's files by name; clipboard
+  reads or sets the clipboard; camera takes a webcam photo; open_url opens a website, file,
+  or folder. When none of these fit, fall back to run_command's read-only discovery.
 
 Locations: the user's own files live under {projects_dir} (code projects, one dir per
 project) and {music_dir} (local music). Resolve "my project(s)" / "my music" there.
 
 Use read-only shell (ps, pgrep, ls, cat, grep, df, uptime) freely. Never invent results —
 only use the OBSERVATIONs.
+
+{capabilities}
 
 Voice — applies to every "final" answer and every "choice" question (the text the user
 hears), NOT to the tool JSON or your reasoning:
@@ -269,6 +279,81 @@ def _user_context() -> str:
     if where:
         return f" The user is based in {where}; treat that location as 'here' for local matters."
     return ""
+
+
+# Machine + capability awareness. One cached probe of the host agent tells the model what
+# computer this is (desktop, session type, distro) and which actions actually work here (which
+# tools are installed), so it is grounded and never attempts something whose tool is missing.
+# Capability keys match host-agent skills/capabilities.py.
+_probe_cache: dict = {"data": None, "at": 0.0}
+_CAPS_TTL = 300  # seconds
+_CAP_LABELS = {
+    "screenshot": "taking screenshots",
+    "brightness": "changing screen brightness",
+    "youtube": "playing on YouTube (needs Google Chrome)",
+    "local_music": "playing local music files",
+    "keyboard_input": "pressing keys or typing into windows",
+    "windows": "listing or controlling windows",
+    "bluetooth": "Bluetooth control",
+    "wifi": "Wi-Fi control",
+    "power_profile": "changing the power profile",
+    "input_devices": "enabling or disabling input devices",
+    "camera": "taking a webcam photo",
+    "clipboard": "reading or setting the clipboard",
+    "media_control": "controlling the media player",
+}
+
+
+async def _host_probe() -> dict:
+    """The host's machine + capability report, cached for _CAPS_TTL. {} if the agent is unreachable."""
+    now = time.time()
+    if _probe_cache["data"] is not None and now - _probe_cache["at"] < _CAPS_TTL:
+        return _probe_cache["data"]
+    try:
+        res = await host_client.execute("capabilities", {})
+        data = res.get("data") if isinstance(res, dict) else None
+    except Exception as e:  # noqa: BLE001
+        log.debug("host probe failed: %s", e)
+        data = None
+    _probe_cache["data"] = data if isinstance(data, dict) else {}
+    _probe_cache["at"] = now
+    return _probe_cache["data"]
+
+
+async def _machine_context() -> str:
+    """A grounding line naming the desktop, session type, and distro, or "" if unknown."""
+    m = (await _host_probe()).get("machine")
+    if not isinstance(m, dict) or not m:
+        return ""
+    sess = (m.get("session_type") or "").strip()
+    bits = []
+    if (de := (m.get("desktop") or "").strip()):
+        bits.append(f"the {de} desktop")
+    if sess:
+        bits.append(f"a {sess} session")
+    if (distro := (m.get("distro") or "").strip()):
+        bits.append(distro)
+    if not bits:
+        return ""
+    note = "This computer runs " + ", ".join(bits) + "."
+    if sess.lower() == "wayland":
+        note += (" It is Wayland, so simulated keystrokes and window control reach XWayland apps "
+                 "and may miss native-Wayland-only windows, and toggling input devices may not "
+                 "work; use the dedicated skills and don't promise what Wayland can't do.")
+    return note
+
+
+async def _capabilities_note() -> str:
+    """A short prompt note listing actions that DON'T work here (tool missing), or "" if all do."""
+    caps = (await _host_probe()).get("capabilities")
+    if not isinstance(caps, dict) or not caps:
+        return ""
+    missing = [label for key, label in _CAP_LABELS.items() if caps.get(key) is False]
+    if not missing:
+        return ""
+    return ("Not available on this machine right now (the needed tool isn't installed, so do "
+            "NOT attempt these — tell the user plainly and that running the project's "
+            "scripts/setup-desktop.sh installs the tools): " + "; ".join(missing) + ".")
 
 
 async def _emit(on_progress: Progress, step: str, label: str) -> None:
@@ -379,6 +464,8 @@ async def handle(text: str, *, transcript: str | None = None,
     system = (AGENT_SYSTEM
               .replace("{context}", _now_context())
               .replace("{user}", _user_context())
+              .replace("{machine}", await _machine_context())
+              .replace("{capabilities}", await _capabilities_note())
               .replace("{persona}", llm.PERSONA)
               .replace("{catalog}", catalog_for_prompt())
               .replace("{music_dir}", s.music_dir)

@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Notification recorder — the host agent's eyes on KDE notifications.
+"""Notification recorder: the host agent's eyes on desktop notifications.
 
-KDE/freedesktop notifications are *fire-and-forget*: apps call the D-Bus method
-``org.freedesktop.Notifications.Notify(...)`` and the server (Plasma) renders them. There
-is no API to read past notifications back — Plasma keeps the history only in plasmashell's
-memory. So the only way to "see" notifications programmatically is to watch the bus as they
-are emitted.
+Desktop notifications follow the freedesktop spec and are fire-and-forget: apps call the
+D-Bus method ``org.freedesktop.Notifications.Notify(...)`` and whatever notification server
+the desktop runs (Plasma, GNOME Shell, Xfce, Dunst, and so on) shows them. There is no API to
+read past ones back, so the only way to see them is to watch the bus as they are emitted.
+Because this is the shared standard, it works the same on KDE, GNOME, XFCE, and others.
 
 This module runs ``dbus-monitor`` on the session bus, filtered to ``Notify`` calls, parses
 each one (app, summary, body) and appends it to a capped JSON-lines ring buffer that the
-``notifications`` skill reads. Stdlib only; a graceful no-op if dbus-monitor or a session
-bus isn't available. A background thread keeps the monitor alive across bus restarts.
+``notifications`` skill reads. Stdlib only, and a graceful no-op if dbus-monitor or a session
+bus is not available. A background thread keeps the monitor alive across bus restarts.
 """
 from __future__ import annotations
 

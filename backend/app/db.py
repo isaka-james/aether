@@ -7,6 +7,9 @@ Holds the things that make Aether feel like it *knows* the user across sessions:
   • preferences   — remembered settings (favourite volume, default player, …)
   • play_history  — everything played, so favourites can be inferred from what's played most
 
+The schema applies and upgrades itself on startup through a small migration runner
+(see ``_migrate``), so an update never needs manual SQL.
+
 Everything here is best-effort: if no DATABASE_URL is set or the database is unreachable,
 the pool stays ``None`` and every function degrades to a safe no-op/empty result so the
 core assistant keeps working. Never let persistence take the app down.
@@ -28,7 +31,7 @@ except Exception:  # noqa: BLE001 - dependency may be absent in minimal installs
 
 _pool: "asyncpg.Pool | None" = None
 
-_SCHEMA = """
+_BASELINE = """
 CREATE TABLE IF NOT EXISTS interactions (
     id          BIGSERIAL PRIMARY KEY,
     session     TEXT,
@@ -86,6 +89,40 @@ async def _init_conn(conn) -> None:
                               schema="pg_catalog")
 
 
+# --- Self-applying migrations -------------------------------------------------
+# The database upgrades itself on every startup. Each entry runs once, in order, inside its
+# own transaction, and is recorded in `schema_migrations`, so applying twice is a no-op and a
+# failed step rolls back and retries next start. This works for fresh installs AND for older
+# ones that already have the baseline tables (the version-1 baseline is idempotent, so it is
+# recorded without changing anything).
+#
+# To evolve the schema, APPEND a new (version, SQL) entry below. Never edit or renumber an
+# applied one. Write each step idempotently (CREATE ... IF NOT EXISTS, ALTER TABLE ... ADD
+# COLUMN IF NOT EXISTS) so it is safe even on an unexpected state.
+_MIGRATIONS: list[tuple[int, str]] = [
+    (1, _BASELINE),
+    # Speeds up the per-session "most-asked" suggestions query as history grows.
+    (2, "CREATE INDEX IF NOT EXISTS interactions_session_idx ON interactions (session);"),
+    # Example of the column pattern (kept commented; uncomment + bump when you actually need it):
+    # (3, "ALTER TABLE interactions ADD COLUMN IF NOT EXISTS latency_ms INTEGER;"),
+]
+
+
+async def _migrate(conn) -> None:
+    """Bring the database to the latest schema version. Idempotent; safe to run every startup."""
+    await conn.execute(
+        "CREATE TABLE IF NOT EXISTS schema_migrations ("
+        " version INTEGER PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())")
+    applied = {r["version"] for r in await conn.fetch("SELECT version FROM schema_migrations")}
+    for version, sql in _MIGRATIONS:
+        if version in applied:
+            continue
+        async with conn.transaction():
+            await conn.execute(sql)
+            await conn.execute("INSERT INTO schema_migrations (version) VALUES ($1)", version)
+        log.info("database migrated to version %d", version)
+
+
 async def connect() -> bool:
     """Create the pool and ensure the schema. Returns True if the DB is usable."""
     global _pool
@@ -97,8 +134,8 @@ async def connect() -> bool:
         _pool = await asyncpg.create_pool(s.database_url, min_size=1, max_size=5,
                                           init=_init_conn, command_timeout=10)
         async with _pool.acquire() as conn:
-            await conn.execute(_SCHEMA)
-        log.info("Postgres connected; schema ready.")
+            await _migrate(conn)
+        log.info("Postgres connected; schema up to date.")
         return True
     except Exception as e:  # noqa: BLE001
         log.warning("Postgres unavailable (%s) — continuing without it.", e)
