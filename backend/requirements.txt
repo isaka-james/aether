@@ -8,18 +8,18 @@ httpx==0.28.1
 # Range pins: both SDKs keep a stable surface within these bounds, so a fresh
 # build picks up patches without breaking. openai also serves DeepSeek + any
 # local/OpenAI-compatible server; anthropic serves Claude.
-openai>=1.50,<2
-anthropic>=0.40,<1
+openai>=2.43,<3
+anthropic>=0.111,<1
 
-faster-whisper==1.1.1
+faster-whisper==1.2.1
 requests==2.34.2                 # security: .netrc leak + later CVEs fixed
-kokoro-onnx==0.4.7
-soundfile==0.13.0
-numpy==2.2.1
+kokoro-onnx==0.5.0
+soundfile==0.14.0
+numpy==2.5.0
 PyJWT==2.13.0                    # security: algorithm-confusion / DoS / SSRF JWK CVEs fixed
-bcrypt==4.2.1
-pydantic==2.10.4
-pydantic-settings==2.7.1
-asyncpg==0.30.0
-redis==5.2.1
-tzdata==2024.2          # zoneinfo database (slim image has no OS tzdata) for AETHER_TZ
+bcrypt==5.0.0
+pydantic==2.13.4
+pydantic-settings==2.14.2
+asyncpg==0.31.0
+redis==8.0.1
+tzdata==2026.2          # zoneinfo database (slim image has no OS tzdata) for AETHER_TZ
