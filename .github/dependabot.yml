@@ -1,0 +1,40 @@
+# Dependabot configuration.
+#
+# We deliberately keep exact (==) version pins in requirements.txt for
+# reproducible, auditable builds. Dependabot is how those pins move forward:
+# every update (and every security advisory) arrives as a reviewable PR that CI
+# can test, instead of a `>=` floor silently pulling a new — possibly
+# compromised or breaking — release at build time.
+#
+# Grouping: routine minor/patch bumps are batched into one PR per ecosystem to
+# cut noise; majors come as individual PRs (review them by hand). Security
+# updates are always opened promptly, regardless of schedule.
+version: 2
+updates:
+  # Backend Python dependencies — the pinned requirements.txt.
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      backend-python:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # Host agent — optional browser/playback extra.
+  - package-ecosystem: pip
+    directory: /host-agent
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      host-agent-python:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # Backend container base image (python:3.12-slim) — base-image CVE fixes.
+  - package-ecosystem: docker
+    directory: /backend
+    schedule:
+      interval: weekly
