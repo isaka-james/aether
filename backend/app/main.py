@@ -171,13 +171,21 @@ _DEFAULT_SUGGESTIONS = [
 
 @app.get("/api/suggestions")
 async def suggestions(user: str = Depends(require_user)):
-    """The user's most-asked requests, for the web client's quick chips. Falls back to a
-    sensible default set when there's no history yet (or persistence is disabled)."""
-    items = await db.top_requests(limit=6, session=user)
-    if len(items) < 3:  # not enough real history — pad/replace with defaults
-        seen = {i.lower() for i in items}
-        items += [d for d in _DEFAULT_SUGGESTIONS if d.lower() not in seen]
-    return {"suggestions": items[:6]}
+    """Quick chips for the home page: the user's most-RECENT requests first, then their
+    most-asked, then sensible defaults — de-duplicated and capped. Recency leads so the home
+    reflects what they just did. `from_history` lets the client label the row ("Recent" vs a
+    generic prompt) and is False when there's no real history (or persistence is off)."""
+    recent = await db.recent_requests(limit=6, session=user)
+    frequent = await db.top_requests(limit=6, session=user)
+    items: list[str] = []
+    seen: set[str] = set()
+    for source in (recent, frequent, _DEFAULT_SUGGESTIONS):
+        for c in source:
+            key = (c or "").strip().lower()
+            if key and key not in seen:
+                items.append(c.strip())
+                seen.add(key)
+    return {"suggestions": items[:6], "from_history": bool(recent or frequent)}
 
 
 @app.get("/api/health")

@@ -280,12 +280,13 @@ $("text").addEventListener("keydown", (e) => { if (e.key === "Enter") { const t 
 // Suggestion chips: clicking one sends it (event delegation, so dynamically-loaded chips work).
 $("hint").addEventListener("click", (e) => { const c = e.target.closest(".chip"); if (c) submitText(c.textContent); });
 
-// Populate the chips with the user's most-asked requests (falls back to defaults server-side).
+// Populate the chips with the user's most-RECENT requests (then most-asked, then defaults —
+// all server-side). The label reads "Recent" once there's real history, else a generic prompt.
 async function loadSuggestions() {
   try {
     const r = await fetch("/api/suggestions", { headers: authH() });
     if (!r.ok) return;
-    const { suggestions } = await r.json();
+    const { suggestions, from_history } = await r.json();
     if (!Array.isArray(suggestions) || !suggestions.length) return;
     const hint = $("hint");
     hint.innerHTML = "";
@@ -294,6 +295,8 @@ async function loadSuggestions() {
       b.className = "chip"; b.textContent = s;
       hint.appendChild(b);
     });
+    const label = $("hint-label");
+    if (label) { label.textContent = from_history ? "Recent" : "Try saying"; label.classList.remove("hidden"); }
   } catch (e) { console.warn("suggestions load failed:", e); }
 }
 $("logout").addEventListener("click", logout);

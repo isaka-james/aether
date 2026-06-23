@@ -326,6 +326,36 @@ async def top_requests(limit: int = 6, session: str | None = None) -> list[str]:
         return []
 
 
+async def recent_requests(limit: int = 6, session: str | None = None) -> list[str]:
+    """The user's most-RECENTLY issued requests (newest first), de-duplicated.
+
+    Powers the home page's "Recent" chips: takes the latest phrasing of each distinct request
+    (case-insensitively) and returns them newest-first, so the chips mirror what the user just
+    did. Trivially short or failed entries are skipped so the chips stay useful."""
+    if _pool is None:
+        return []
+    try:
+        async with _pool.acquire() as c:
+            rows = await c.fetch(
+                """
+                SELECT request FROM (
+                    SELECT DISTINCT ON (lower(trim(request))) request, created_at
+                    FROM interactions
+                    WHERE request IS NOT NULL AND char_length(trim(request)) >= 6
+                      AND ($1::text IS NULL OR session = $1)
+                      AND COALESCE(ok, true) = true
+                    ORDER BY lower(trim(request)), created_at DESC
+                ) latest
+                ORDER BY created_at DESC
+                LIMIT $2
+                """,
+                session, limit)
+        return [r["request"].strip() for r in rows if (r["request"] or "").strip()]
+    except Exception as e:  # noqa: BLE001
+        log.warning("recent_requests failed: %s", e)
+        return []
+
+
 # --- preferences --------------------------------------------------------------
 async def get_preference(key: str, default: Any = None) -> Any:
     if _pool is None:

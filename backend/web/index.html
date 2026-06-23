@@ -68,8 +68,9 @@
         <button id="rec-send" class="btn-primary">Send ↑</button>
       </div>
 
-      <!-- Populated with the user's most-asked requests by loadSuggestions(); these are the
-           first-paint fallback shown until that resolves (or if persistence is off). -->
+      <!-- Populated with the user's most-RECENT requests by loadSuggestions() (then most-asked,
+           then these first-paint defaults shown until that resolves / if persistence is off). -->
+      <p id="hint-label" class="hint-label hidden">Recent</p>
       <div id="hint" class="hint">
         <button class="chip">play lofi hip hop on youtube</button>
         <button class="chip">what's the weather</button>
