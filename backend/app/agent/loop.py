@@ -24,6 +24,7 @@ from ..config import get_settings
 from ..models import Action, Clarification, CommandResult
 from ..safety import classify_command
 from ..skills import catalog_for_prompt
+from . import understand
 from .prompts import (AGENT_SYSTEM, _DELEGATION_PROMPT, _capabilities_note,
                       _machine_context, _now_context, _user_context)
 from .subagents import _delegate
@@ -69,6 +70,18 @@ async def handle(text: str, *, transcript: str | None = None,
                              summary="I'm afraid nothing came through, sir.", transcript=transcript)
     s = get_settings()
     session = session or "default"
+    context = await cache.get_context(session)
+
+    # Understand phase: refine the raw (often messy speech-to-text) request into a precise goal +
+    # checkable success criteria, resolving "it/that/again" from the recent context. On a genuine
+    # fork it asks the user now rather than guessing. Skipped when resuming an answered choice
+    # (clarify set) so we never re-ask what the user just decided.
+    intent = None
+    if clarify is None:
+        intent = await understand.refine_request(text, context)
+        if intent.ambiguous:
+            return await _ask_choice(transcript, intent.question, intent.options, on_progress)
+
     system = (AGENT_SYSTEM
               .replace("{context}", _now_context())
               .replace("{user}", _user_context())
@@ -80,8 +93,12 @@ async def handle(text: str, *, transcript: str | None = None,
               .replace("{music_dir}", s.music_dir)
               .replace("{projects_dir}", s.projects_dir))
     messages = [{"role": "system", "content": system}]
+    # Inject the refined objective + success criteria as guidance the agent works to (and later verifies).
+    obj_note = understand.objective_note(intent, text) if intent else ""
+    if obj_note:
+        messages.append({"role": "system", "content": obj_note})
     # Short follow-up memory: replay recent turns so "and now mute it" resolves in context.
-    for turn in await cache.get_context(session):
+    for turn in context:
         if turn.get("content"):
             messages.append({"role": turn.get("role", "user"), "content": turn["content"]})
     messages.append({"role": "user", "content": text})

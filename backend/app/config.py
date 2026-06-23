@@ -118,6 +118,14 @@ class Settings(BaseSettings):
     subagent_max_steps: int = 6      # tool-steps a sub-agent may take before it must conclude
     max_parallel_agents: int = 3     # cap on sub-agents one delegate call runs concurrently
 
+    # --- Agent reasoning passes (robustness vs. a little latency/cost) ------
+    # refine: a small pre-pass that turns messy speech-to-text into a precise goal + checkable
+    # success criteria (and asks the user only on a genuine fork). verify: after the agent has
+    # acted, a small pass confirms the goal's success criteria actually hold before it finishes,
+    # and sends it back to fix things if not. Both degrade safely to today's behaviour on failure.
+    refine_request: bool = True
+    verify_actions: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:
