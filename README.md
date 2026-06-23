@@ -4,6 +4,8 @@
 
 **Talk to your computer. It listens, and it acts.**
 
+[![CI](https://github.com/isaka-james/aether/actions/workflows/ci.yml/badge.svg)](https://github.com/isaka-james/aether/actions/workflows/ci.yml)
+
 Aether is a self hosted voice assistant for your Linux desktop. Speak or type from your
 phone, laptop, or tablet, and it runs things on your machine and talks back. You choose the AI
 model behind it, and everything stays on your computer unless you decide otherwise.
@@ -116,6 +118,23 @@ you plan to open it to the internet, read [docs/SECURITY.md](docs/SECURITY.md) f
 - Docker
 - Google Chrome (only for the YouTube features)
 - An AI key from DeepSeek, OpenAI, or Claude, or a model running locally (no key needed)
+
+## Development
+
+The backend ships with a unit-test suite covering the parts that most need it — the command
+**safety classifier** (which decides what shell commands may run on your machine), the agent's
+JSON parsing, LLM provider resolution, authentication, and the skill-catalog invariants. To run
+it:
+
+```bash
+cd backend
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+pytest
+```
+
+The same suite runs on every push and pull request via GitHub Actions
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
 
 ---
 

@@ -43,12 +43,17 @@ _BLOCK_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r">\s*/dev/(sd|nvme|mmcblk|disk)"), "overwriting a block device"),
     (re.compile(r"\b(fdisk|parted|sgdisk|gdisk)\b"), "rewriting the partition table"),
     (re.compile(r"\brm\s+(-[a-z]*\s+)*(/|~|/\*|\$HOME)\s*$"), "deleting the root or home directory"),
+    # `--no-preserve-root` exists only to defeat rm's built-in guard on `/`; its sole purpose is
+    # to wipe the root filesystem, so refuse it outright whatever the flag order or target.
+    (re.compile(r"--no-preserve-root\b"), "wiping the root filesystem (--no-preserve-root)"),
     # Wiping a whole critical system directory (the dir itself, not a file inside it) bricks the
     # machine irreversibly — block it. `rm -rf /usr/local/foo` still drops to CONFIRM below.
     (re.compile(r"\brm\s+(-[a-z]*\s+)*/(etc|usr|s?bin|lib(32|64)?|boot|var|sys|proc|opt|root|dev|home)/?\s*$"),
      "wiping a critical system directory"),
-    (re.compile(r"\bchmod\s+(-R\s+)?0?[0-7]{3,4}\s+/\b"), "changing permissions on / (root)"),
-    (re.compile(r"\bchown\s+(-R\s+)?\S+\s+/\b"), "changing ownership of / (root)"),
+    # Target `/`: a word char after it (`/usr`), `/*`, or a bare `/` at end of command. The bare
+    # `/` case needs the explicit `\s*$` — a trailing `\b` alone never matches `/` at end of line.
+    (re.compile(r"\bchmod\s+(-R\s+)?0?[0-7]{3,4}\s+/(?:\b|\*|\s*$)"), "changing permissions on / (root)"),
+    (re.compile(r"\bchown\s+(-R\s+)?\S+\s+/(?:\b|\*|\s*$)"), "changing ownership of / (root)"),
     (re.compile(r">\s*/etc/(passwd|shadow|sudoers)"), "overwriting critical authentication files"),
     (re.compile(r"(curl|wget)\s+[^|]*\|\s*(sudo\s+)?(ba)?sh"), "piping a download straight into a shell"),
     (re.compile(r"\b(mv|cp)\s+/\s"), "moving or copying the root directory"),
@@ -73,7 +78,9 @@ _CONFIRM_PATTERNS: list[tuple[re.Pattern, str, Severity]] = [
      "performs a destructive git operation", "medium"),
     # Redirecting to a real file overwrites it. Ignore the harmless /dev/null|stderr|stdout
     # and fd-dup (2>&1) cases so read-only investigation (e.g. `find … 2>/dev/null`) runs freely.
-    (re.compile(r">>?\s*(?!&)(?!/dev/(?:null|stderr|stdout)\b)\S"), "overwrites a file", "medium"),
+    # The target char is `[^\s>]`, not `\S`: otherwise the second `>` of an append (`>> /dev/null`)
+    # is itself taken as the "filename", defeating the /dev exclusion for append redirects.
+    (re.compile(r">>?\s*(?!&)(?!/dev/(?:null|stderr|stdout)\b)[^\s>]"), "overwrites a file", "medium"),
     (re.compile(r"\bmv\s+\S"), "moves or renames files", "low"),
 ]
 
