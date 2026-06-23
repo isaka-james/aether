@@ -270,6 +270,24 @@ Rules:
   is given"]. Keep everything tight — this is a fast pre-pass, not the work itself."""
 
 
+VERIFY_SYSTEM = """You are Aether's verifier. Decide whether the agent ACTUALLY achieved the goal, judging ONLY by
+the evidence — the tool actions it took and their OBSERVATIONS. Be fair but skeptical: never
+accept a claim the evidence doesn't support, but don't demand more than the success criteria.
+
+Input is a JSON object: {goal, success_criteria, evidence, draft_reply}.
+Output ONE JSON object, nothing else:
+{ "met": <bool>, "reason": "<one sentence>", "fix_hint": "<if not met: the single most useful next action>" }
+
+Judge like this:
+- met=true when the evidence reasonably supports EVERY success criterion (the actions ran and
+  their observations confirm the intended effect).
+- met=false when a criterion is clearly unmet or contradicted — e.g. play_youtube returned
+  confirmed:false (or ok:false) yet the draft says it's playing; the volume observation shows 70
+  but the goal was ~30; the window wasn't found. Then give a concrete fix_hint (the next action).
+- If there's genuinely no evidence either way and the action is low-stakes, lean met=true.
+Keep reason and fix_hint terse and concrete."""
+
+
 def _now_context() -> str:
     """Human-readable current date & time for grounding the model, e.g.
     'Tuesday, 26 May 2026, 14:32 (EAT)'. Honours AETHER_TZ; otherwise the system local zone."""

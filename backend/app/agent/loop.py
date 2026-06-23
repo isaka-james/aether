@@ -24,9 +24,10 @@ from ..config import get_settings
 from ..models import Action, Clarification, CommandResult
 from ..safety import classify_command
 from ..skills import catalog_for_prompt
-from . import understand
+from . import understand, verify
 from .prompts import (AGENT_SYSTEM, _DELEGATION_PROMPT, _capabilities_note,
                       _machine_context, _now_context, _user_context)
+from .state import AgentState, Phase, StopReason
 from .subagents import _delegate
 from .tools import OBS_LIMIT, Progress, _emit, _parse, _run_and_observe
 
@@ -36,8 +37,18 @@ _SUDO = re.compile(r"\bsudo\b")
 # A capable cloud model (DeepSeek) drives the loop, so give it room to investigate state,
 # resolve a conflict, act, and verify — a smart multi-step chain shouldn't get truncated.
 MAX_STEPS = 9
+MAX_VERIFY = 2  # at most this many verify→fix rounds before we finish with an honest answer
 # Voiced when the model returns nothing usable — better a graceful line than silence.
 FALLBACK_REPLY = "I'm afraid I've come up short on that one, sir."
+
+# Tools that only READ state. A request that used only these (a pure question / investigation)
+# hasn't changed anything, so it skips the verify pass — there's nothing to re-check.
+READ_ONLY_TOOLS = frozenset({
+    "list_music", "list_windows", "count_windows", "is_running", "running_apps", "list_projects",
+    "list_input_devices", "now_playing", "youtube_status", "weather", "notifications",
+    "system_info", "get_brightness", "bluetooth_status", "wifi_status", "capabilities",
+    "find_tool", "find_files", "play_history", "list_favorites", "get_preference",
+})
 
 # Statuses that represent the agent talking — a finished answer (done), a question
 # (needs_choice), or an approval prompt (needs_confirmation). Everything else (error,
@@ -110,7 +121,9 @@ async def handle(text: str, *, transcript: str | None = None,
         messages.append({"role": "user", "content": f"My answer: {clarify.answer}"})
 
     trace: dict = {"skill": None}
-    result = await _loop(messages, transcript, on_progress, trace=trace)
+    state = AgentState(goal=(intent.goal if intent else text),
+                       success_criteria=(intent.success_criteria if intent else []))
+    result = await _loop(messages, transcript, on_progress, trace=trace, state=state)
     if result.skill is None:
         result.skill = trace["skill"]
     # Never-silent guarantee for SUCCESSFUL replies only. Errors/blocks are deliberately
@@ -132,15 +145,20 @@ async def handle(text: str, *, transcript: str | None = None,
 
 
 async def _loop(messages: list[dict], transcript: str | None, on_progress: Progress,
-                *, trace: dict | None = None) -> CommandResult:
+                *, trace: dict | None = None, state: "AgentState | None" = None) -> CommandResult:
+    """The coordinator: discover/plan → execute → verify → stop. `state` carries the working
+    memory (goal, success criteria, what's been done, repeated-call guard) across turns."""
     s = get_settings()
     trace = trace if trace is not None else {}
+    state = state or AgentState()
     for step in range(MAX_STEPS):
+        state.step = step
         await _emit(on_progress, "thinking", "Thinking…" if step == 0 else "Reasoning about the result…")
         try:
             content = await llm.complete(messages, json_mode=True)
         except Exception as e:  # noqa: BLE001
             log.warning("agent step failed: %s", e)
+            state.stop_reason = StopReason.LLM_ERROR
             # Silent on the speakers (status=error); detailed text + `detail` is what the
             # web client renders so the user can act on the real problem.
             return await _finish(CommandResult(
@@ -169,13 +187,18 @@ async def _loop(messages: list[dict], transcript: str | None, on_progress: Progr
                                  "from. Either act now with the best tool call, or re-ask with "
                                  "2-4 concrete, distinct options. Reply as JSON."})
                 continue
+            state.stop_reason = StopReason.NEEDS_USER
             return await _ask_choice(transcript, str(choice["question"]), options, on_progress)
 
         tool = obj.get("tool") or obj.get("skill")
 
+        # ---- the model wants to finish: verify the goal before we accept it ----
         if "final" in obj:
-            final = (obj.get("final") or (obj.get("params") or {}).get("text") or "").strip()
-            return await _finish(_done(transcript, final or FALLBACK_REPLY), on_progress)
+            draft = (obj.get("final") or (obj.get("params") or {}).get("text") or "").strip() or FALLBACK_REPLY
+            concluded = await _conclude(state, transcript, draft, messages, on_progress)
+            if concluded is not None:
+                return concluded
+            continue  # verification sent us back to fix something
 
         if not tool:
             # No action and no final answer. If the model only reasoned aloud, nudge it to act
@@ -193,8 +216,34 @@ async def _loop(messages: list[dict], transcript: str | None, on_progress: Progr
         log.info("agent step %d: tool=%s params=%s", step, tool,
                  {k: v for k, v in params.items() if "password" not in k})
         if tool in ("answer", "final", "reply", "respond"):
-            final = (params.get("text") or "").strip()
-            return await _finish(_done(transcript, final or FALLBACK_REPLY), on_progress)
+            draft = (params.get("text") or "").strip() or FALLBACK_REPLY
+            concluded = await _conclude(state, transcript, draft, messages, on_progress)
+            if concluded is not None:
+                return concluded
+            continue
+
+        # ---- loop-protection: don't spin on the identical call ----
+        sig = f"{tool}:{json.dumps(params, sort_keys=True, ensure_ascii=False)}"
+        repeat = state.record_call(sig)
+        if state.repeat_count >= 2:  # the same call three times running — stop rather than spin
+            state.stop_reason = StopReason.UNRECOVERABLE
+            log.info("loop-protection: stopping after a repeated identical call to %s", tool)
+            messages.append({"role": "assistant", "content": json.dumps(obj)})
+            messages.append({"role": "user", "content": "You've repeated the identical action with no "
+                             "progress. Stop now and give your final answer as {\"final\":\"...\"}: state "
+                             "what you achieved, or plainly what you could not."})
+            try:
+                fobj = _parse(await llm.complete(messages, json_mode=True)) or {}
+                return await _finish(_done(transcript, str(fobj.get("final") or FALLBACK_REPLY)), on_progress)
+            except Exception:  # noqa: BLE001
+                return await _finish(_done(transcript, FALLBACK_REPLY), on_progress)
+        if repeat:  # second identical call — nudge instead of running it again
+            messages.append({"role": "assistant", "content": json.dumps(obj)})
+            messages.append({"role": "user", "content": "You just ran exactly this call; it won't return "
+                             "anything new. Change the arguments, try a different tool, or conclude."})
+            continue
+
+        state.phase = Phase.EXECUTE
         messages.append({"role": "assistant", "content": json.dumps(obj)})
 
         # ---- execute the tool: delegation, safety on run_command, or a normal dispatch ----
@@ -218,6 +267,7 @@ async def _loop(messages: list[dict], transcript: str | None, on_progress: Progr
                                        "reason": verdict.reason, "command": command}}
                 elif verdict.verdict == "confirm" and s.require_confirm_medium_risk:
                     root = " (needs root)" if _SUDO.search(command) else ""
+                    state.stop_reason = StopReason.NEEDS_USER
                     return CommandResult(ok=False, status="needs_confirmation", transcript=transcript,
                                          skill="run_command", params={"command": command},
                                          summary=f"Approve running{root}: {command}",
@@ -233,6 +283,10 @@ async def _loop(messages: list[dict], transcript: str | None, on_progress: Progr
                       "data": {"error": str(e)}}
 
         trace["skill"] = tool
+        # A successful tool that isn't purely read-only means we've CHANGED something — record it,
+        # so the verify pass runs before we finish (and so a pure question/lookup skips it).
+        if result.get("ok") and tool not in READ_ONLY_TOOLS:
+            state.acted = True
         # (media-play recording lives in _run_and_observe, so sub-agent plays are logged too.)
 
         # Surface the real failure detail (error/detail), not just the canned summary, so the
@@ -245,6 +299,7 @@ async def _loop(messages: list[dict], transcript: str | None, on_progress: Progr
         messages.append({"role": "user", "content": "OBSERVATION: " + observation[:OBS_LIMIT]})
 
     # Out of steps — ask for a final summary from what was gathered.
+    state.stop_reason = StopReason.EXHAUSTED
     messages.append({"role": "user", "content": "Give your final answer now as {\"final\":\"...\"}."})
     try:
         obj = _parse(await llm.complete(messages, json_mode=True)) or {}
@@ -252,6 +307,54 @@ async def _loop(messages: list[dict], transcript: str | None, on_progress: Progr
     except Exception:  # noqa: BLE001
         final = "I gathered some information but couldn't fully finish."
     return await _finish(_done(transcript, str(final)), on_progress)
+
+
+def _evidence(messages: list[dict]) -> str:
+    """A compact transcript of what the agent actually did — its tool calls and the OBSERVATIONS —
+    for the verifier to judge against (skips the large system prompt)."""
+    parts: list[str] = []
+    for m in messages:
+        role, content = m.get("role"), m.get("content") or ""
+        if role == "assistant":
+            parts.append("ACTION: " + content[:300])
+        elif role == "user" and content.startswith("OBSERVATION:"):
+            parts.append(content[:600])
+    return "\n".join(parts[-12:])[:3000]
+
+
+async def _maybe_verify(state: AgentState, draft: str, messages: list[dict],
+                        on_progress: Progress) -> str | None:
+    """The verify gate. Returns the final text to finish with, or None to keep iterating (a fix
+    instruction has been appended to `messages`). Only runs when the agent actually CHANGED
+    something toward a goal with success criteria; otherwise it's a no-op pass-through."""
+    s = get_settings()
+    if not (s.verify_actions and state.success_criteria and state.acted):
+        return draft
+    if state.verify_attempts >= MAX_VERIFY:
+        return draft  # verified/fixed enough times — finish with the honest draft
+    state.phase = Phase.VERIFY
+    await _emit(on_progress, "reviewing", "Verifying the result…")
+    verdict = await verify.verify_goal(state.goal, state.success_criteria, _evidence(messages), draft)
+    if verdict.met:
+        return draft
+    state.verify_attempts += 1
+    messages.append({"role": "user", "content":
+                     "VERIFICATION FAILED — do NOT claim the task is done. " + verdict.reason
+                     + (f" Fix it: {verdict.fix_hint}." if verdict.fix_hint else "")
+                     + " Take the action(s) needed to actually satisfy the goal, then finish."})
+    state.phase = Phase.EXECUTE
+    return None
+
+
+async def _conclude(state: AgentState, transcript: str | None, draft: str, messages: list[dict],
+                    on_progress: Progress) -> "CommandResult | None":
+    """Run the verify gate and either finalize (return a CommandResult) or signal iterate (None)."""
+    final_text = await _maybe_verify(state, draft, messages, on_progress)
+    if final_text is None:
+        return None
+    state.phase = Phase.DONE
+    state.stop_reason = StopReason.VERIFIED_DONE if state.acted else StopReason.ANSWERED
+    return await _finish(_done(transcript, final_text), on_progress)
 
 
 async def execute_approved(skill: str, params: dict[str, Any], *, transcript: str | None = None,
