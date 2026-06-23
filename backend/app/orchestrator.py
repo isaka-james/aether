@@ -719,11 +719,10 @@ Tools:
 
 
 def _catalog_subset(names: "set[str] | list[str]") -> str:
-    """Render the prompt catalog for just the tools a sub-agent is allowed (preserves catalog order)."""
-    chosen = set(names)
-    from .skills import SKILLS  # local import keeps the module's import surface unchanged
-    return "\n".join(f"- {sk.name}: {sk.description} params: {sk.params}"
-                     for sk in SKILLS if sk.name in chosen)
+    """Render the prompt catalog for just the tools a sub-agent is allowed — categorised and with
+    examples, the same rich format as the coordinator's catalog."""
+    from .skills import catalog_for_prompt
+    return catalog_for_prompt(set(names))
 
 
 async def _run_and_observe(tool: str, params: dict, on_progress: Progress, *, label: str = "") -> dict:
