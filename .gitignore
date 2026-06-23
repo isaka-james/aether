@@ -4,6 +4,7 @@ __pycache__/
 *.wav
 .DS_Store
 models/
+ngrok.log
 
 # host agent runtime + browser venv (created by scripts)
 host-agent/.venv/

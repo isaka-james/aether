@@ -113,7 +113,12 @@ OPT_NOW=no;   yes 'Start Aether right now? [Y/n]:' y && OPT_NOW=yes
 
 # --- 4. Apply ---------------------------------------------------------------
 say "Step 4 of 4   Setting things up"
-chmod +x "$ROOT/scripts/"*.sh 2>/dev/null || true
+chmod +x "$ROOT/scripts/"*.sh "$ROOT/scripts/git-hooks/"* 2>/dev/null || true
+
+# Turn on the repo's git hooks (one blocks committing .env) when this is a git checkout.
+if [ -d "$ROOT/.git" ] && have git; then
+  git -C "$ROOT" config core.hooksPath scripts/git-hooks 2>/dev/null && ok "Git safety hooks enabled"
+fi
 
 if [ "$OPT_DEPS" = yes ]; then
   bash "$ROOT/scripts/setup-desktop.sh" && ok "Desktop tools installed" || warn "Some desktop tools could not be installed. See the messages above."
