@@ -55,7 +55,7 @@ if ! docker info >/dev/null 2>&1; then
   err "Docker is not running. Start it (sudo systemctl start docker) and run this again."
   exit 1
 fi
-docker compose -f "$ROOT/docker-compose.yml" up -d --build && ok "Backend updated and running."
+start_backend && ok "Backend updated and running."
 
 # --- 4. Restart the host agent with the new code ---------------------------
 say "Step 4 of 4   Restarting the assistant"
