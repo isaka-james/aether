@@ -14,6 +14,7 @@ Safety:
 
 An optional on_progress(step, label) async callback drives the web client's phase UI.
 """
+import asyncio
 import json
 import logging
 import re
@@ -157,6 +158,7 @@ the literal words. These principles apply to EVERY skill, not only the examples 
   approves). If something seems off, higher-stakes, or genuinely ambiguous, raise a "choice"
   with real options instead of guessing. Anything the box can do, you can do — figure it out.
 
+{delegation}
 Recipes (these show the pattern; bring the same judgement to everything):
 - "Do I have a terminal / browser / editor / <app> open?" → is_running with name set to the
   type or app ("terminal", "browser", "editor", "chrome", "code", "konsole"). is_running
@@ -468,6 +470,7 @@ async def handle(text: str, *, transcript: str | None = None,
               .replace("{capabilities}", await _capabilities_note())
               .replace("{persona}", llm.PERSONA)
               .replace("{catalog}", catalog_for_prompt())
+              .replace("{delegation}", _DELEGATION_PROMPT if s.subagents_enabled else "")
               .replace("{music_dir}", s.music_dir)
               .replace("{projects_dir}", s.projects_dir))
     messages = [{"role": "system", "content": system}]
@@ -571,15 +574,18 @@ async def _loop(messages: list[dict], transcript: str | None, on_progress: Progr
             return await _finish(_done(transcript, final or FALLBACK_REPLY), on_progress)
         messages.append({"role": "assistant", "content": json.dumps(obj)})
 
-        # ---- execute the tool, with safety on run_command ----
+        # ---- execute the tool: delegation, safety on run_command, or a normal dispatch ----
         # Any unexpected exception here becomes a graceful OBSERVATION rather than a crash,
         # so the loop continues and the model voices the failure — a request never dies silently.
         try:
-            if tool == "run_command":
+            if tool == "delegate":
+                await _emit(on_progress, "thinking", "Delegating to sub-agents…")
+                result: dict[str, Any] = await _delegate(params, on_progress)
+            elif tool == "run_command":
                 command = str(params.get("command", "")).strip()
                 verdict = classify_command(command)
                 if verdict.verdict == "block":
-                    result: dict[str, Any] = {"ok": False, "summary": f"blocked for safety: {verdict.reason}"}
+                    result = {"ok": False, "summary": f"blocked for safety: {verdict.reason}"}
                 elif verdict.verdict == "confirm" and s.require_confirm_medium_risk:
                     root = " (needs root)" if _SUDO.search(command) else ""
                     return CommandResult(ok=False, status="needs_confirmation", transcript=transcript,
@@ -587,32 +593,16 @@ async def _loop(messages: list[dict], transcript: str | None, on_progress: Progr
                                          summary=f"Approve running{root}: {command}",
                                          detail=f"{verdict.reason}.")
                 else:
-                    await _emit(on_progress, "executing", f"Running: {command[:60]}")
-                    result = await host_client.execute("run_command", params)
-            elif tool in _BACKEND_TOOLS:
-                await _emit(on_progress, "executing", f"Looking that up ({tool})…")
-                result = await _backend_tool(tool, params)
-            elif tool in SKILL_NAMES:
-                await _emit(on_progress, "executing", f"Running it ({tool})…")
-                result = await host_client.execute(tool, params)
+                    result = await _run_and_observe(tool, params, on_progress)
             else:
-                result = {"ok": False, "summary": f"unknown tool '{tool}'"}
+                result = await _run_and_observe(tool, params, on_progress)
         except Exception as e:  # noqa: BLE001
             log.exception("tool %s raised", tool)
             result = {"ok": False, "summary": f"The {tool} step hit an unexpected error.",
                       "data": {"error": str(e)}}
 
         trace["skill"] = tool
-        # Learn from what actually gets played, so favourites can be recalled/inferred later.
-        if tool in ("play_youtube", "play_music") and result.get("ok"):
-            label = str(params.get("query")
-                        or next(iter(params.get("paths") or [params.get("path", "")]), "")).strip()
-            if label:
-                source = "youtube" if tool == "play_youtube" else "music"
-                try:
-                    await db.record_play(source, label)
-                except Exception as e:  # noqa: BLE001
-                    log.warning("record_play failed: %s", e)
+        # (media-play recording lives in _run_and_observe, so sub-agent plays are logged too.)
 
         # Surface the real failure detail (error/detail), not just the canned summary, so the
         # model can reason about WHY and adapt — recovery is its job, not a hardcoded branch.
@@ -631,6 +621,256 @@ async def _loop(messages: list[dict], transcript: str | None, on_progress: Progr
     except Exception:  # noqa: BLE001
         final = "I gathered some information but couldn't fully finish."
     return await _finish(_done(transcript, str(final)), on_progress)
+
+
+# ===========================================================================
+#  Multi-agent: the coordinator (above) can hand a focused sub-goal to a
+#  specialist sub-agent via the `delegate` tool, and run several in parallel.
+#  Sub-agents are headless — no voice, no user questions, no approval-gated
+#  shell — so the human-in-the-loop guarantees stay with the coordinator.
+# ===========================================================================
+
+# Injected into the coordinator's prompt only when sub-agents are enabled (see handle()).
+_DELEGATION_PROMPT = """Delegation — you can split work across focused sub-agents with the `delegate` tool, and it is
+often the smart move:
+- Several independent goals at once → delegate them TOGETHER so they run in parallel. Pass a
+  "tasks" list; each runs at the same time. e.g. "dim the screen, play some jazz and tell me the
+  weather" → {"tool":"delegate","params":{"tasks":[
+     {"role":"desktop","task":"set the screen brightness to about 30%"},
+     {"role":"media","task":"play some jazz on YouTube"},
+     {"role":"knowledge","task":"get the current weather for the user's location"}]}}.
+- One involved, self-contained sub-goal → hand it to a specialist so your own reasoning stays
+  clear: {"tool":"delegate","params":{"role":"media","task":"play blinding lights and set the video volume to 40"}}.
+Roles and their focus — "media" (sound, music, YouTube, favourites & preferences), "desktop"
+(windows, apps, keyboard, screen, power, connectivity), "knowledge" (weather, notifications,
+files, system state, read-only lookups), "general" (the full toolset; use when unsure). Each
+sub-agent investigates and acts on its own, then returns a short factual result; you weave those
+into ONE spoken reply in your voice. Don't delegate a single trivial action you can do in one
+call — delegation adds a round-trip; use it for parallelism or genuinely involved sub-goals.
+Sub-agents can't ask the user or run approval-gated/sudo commands — keep those at your level.
+"""
+
+# What each specialist is and which tools it may use. "general" gets everything; unknown roles
+# fall back to it. Tool lists are intersected with the real catalog at spawn time, so a typo or a
+# retired skill simply drops out rather than breaking.
+_ROLES: dict[str, tuple[str, list[str]]] = {
+    "media": (
+        "You handle everything to do with sound and playback: the system volume and microphone, "
+        "local music, YouTube/Chrome video, and the user's media favourites & remembered settings.",
+        ["set_volume", "mic", "media_control", "now_playing",
+         "list_music", "play_music", "stop_playback",
+         "play_youtube", "stop_youtube", "youtube_volume", "youtube_control", "youtube_status",
+         "list_favorites", "remember_favorite", "forget_favorite",
+         "get_preference", "set_preference", "play_history"],
+    ),
+    "desktop": (
+        "You control the desktop: windows and apps, the keyboard and input devices, the screen "
+        "(brightness, lock, screenshot, power profile) and connectivity (Bluetooth / Wi-Fi).",
+        ["open_app", "open_url", "close_app", "running_apps", "is_running",
+         "list_windows", "count_windows", "close_window", "focus_window", "close_tab", "new_tab",
+         "press_keys", "type_text", "list_input_devices", "set_input_device", "list_projects",
+         "get_brightness", "brightness", "screenshot", "lock_screen", "unlock_screen",
+         "power_action", "power_profile",
+         "bluetooth_status", "bluetooth_power", "wifi_status", "wifi_power", "run_command"],
+    ),
+    "knowledge": (
+        "You gather information about the machine and the world and answer questions, using "
+        "read-only tools: weather, notifications, the user's files, installed tools, system "
+        "state, the clipboard and the camera. You report; you don't change settings.",
+        ["weather", "notifications", "clear_notifications", "notify",
+         "find_files", "find_tool", "capabilities", "system_info",
+         "clipboard", "camera", "open_url", "run_command"],
+    ),
+    "general": (
+        "You handle one focused sub-task with the full set of tools.",
+        sorted(SKILL_NAMES),
+    ),
+}
+
+SUBAGENT_SYSTEM = """You are a focused sub-agent of Aether, working on ONE task handed to you by the coordinator. {instruction}
+
+Right now it is {context}.
+
+Reach the task by calling tools — ONE per turn, as a single JSON object:
+  • {"thought":"<brief private reasoning>","tool":"<name>","params":{...}}   to run a tool
+  • {"final":"<concise factual result>"}                                     when the task is done
+After each tool call you get an OBSERVATION; use it to choose the next step. Investigate with
+read-only tools before acting when it matters. You are trusted — act on your own initiative and
+finish the job; chain a few tools if that's what it takes.
+
+You are headless: you CANNOT ask the user anything and CANNOT run commands that need approval
+(no sudo, nothing destructive). Never stall or wait — do the sensible thing within your tools,
+or finish and state plainly what is blocked. Never emit a "choice".
+
+When done, reply with {"final":"..."} giving a SHORT, factual result of what you did or found —
+one or two plain sentences, no persona and no flourish (the coordinator phrases the spoken
+reply). Report the real outcome, including if something didn't work.
+
+Tools:
+{catalog}"""
+
+
+def _catalog_subset(names: "set[str] | list[str]") -> str:
+    """Render the prompt catalog for just the tools a sub-agent is allowed (preserves catalog order)."""
+    chosen = set(names)
+    from .skills import SKILLS  # local import keeps the module's import surface unchanged
+    return "\n".join(f"- {sk.name}: {sk.description} params: {sk.params}"
+                     for sk in SKILLS if sk.name in chosen)
+
+
+async def _run_and_observe(tool: str, params: dict, on_progress: Progress, *, label: str = "") -> dict:
+    """Execute one already-cleared tool (a skill, a backend data tool, or an allowed run_command)
+    and return its result dict, logging any media play. Shared by the coordinator and sub-agents so
+    both dispatch identically. Callers are responsible for run_command safety classification."""
+    prefix = f"{label}: " if label else ""
+    try:
+        if tool in _BACKEND_TOOLS:
+            await _emit(on_progress, "executing", f"{prefix}Looking that up ({tool})…")
+            result = await _backend_tool(tool, params)
+        elif tool == "run_command" or tool in SKILL_NAMES:
+            shown = str(params.get("command", "")).strip() if tool == "run_command" else tool
+            await _emit(on_progress, "executing", f"{prefix}Running it ({shown[:60]})…")
+            result = await host_client.execute(tool, params)
+        else:
+            result = {"ok": False, "summary": f"unknown tool '{tool}'"}
+    except Exception as e:  # noqa: BLE001
+        log.exception("tool %s raised", tool)
+        result = {"ok": False, "summary": f"The {tool} step hit an unexpected error.",
+                  "data": {"error": str(e)}}
+    # Learn from what actually gets played, so favourites can be recalled/inferred later.
+    if tool in ("play_youtube", "play_music") and result.get("ok"):
+        plabel = str(params.get("query")
+                     or next(iter(params.get("paths") or [params.get("path", "")]), "")).strip()
+        if plabel:
+            try:
+                await db.record_play("youtube" if tool == "play_youtube" else "music", plabel)
+            except Exception as e:  # noqa: BLE001
+                log.warning("record_play failed: %s", e)
+    return result
+
+
+async def _delegate(params: dict, on_progress: Progress) -> dict:
+    """Run one or more specialist sub-agents and fold their results into a single OBSERVATION.
+
+    params: {"role": "<role>", "task": "<sub-goal>"}                 for one, or
+            {"tasks": [{"role","task"}, ...]}      to run several CONCURRENTLY (capped by config).
+    """
+    s = get_settings()
+    if not s.subagents_enabled:
+        return {"ok": False, "summary": "Delegation is off — handle it yourself with direct tools."}
+
+    raw = params.get("tasks")
+    items = raw if isinstance(raw, list) else [params]
+    subtasks: list[tuple[str, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        task = str(item.get("task") or item.get("goal") or "").strip()
+        if not task:
+            continue
+        role = str(item.get("role") or "general").strip().lower()
+        subtasks.append((role if role in _ROLES else "general", task))
+    if not subtasks:
+        return {"ok": False, "summary": "delegate needs a 'task' (and optional 'role'), or a 'tasks' list."}
+
+    subtasks = subtasks[: max(1, s.max_parallel_agents)]
+    log.info("delegating %d sub-task(s): %s", len(subtasks), [r for r, _ in subtasks])
+    results = await asyncio.gather(*[_run_subagent(role, task, on_progress) for role, task in subtasks])
+
+    ok = all(r["ok"] for r in results)
+    summary = (results[0]["result"] if len(results) == 1
+               else "  ".join(f"[{r['role']}] {r['result']}" for r in results))
+    return {"ok": ok, "summary": summary, "data": {"results": results}}
+
+
+async def _run_subagent(role: str, task: str, on_progress: Progress) -> dict:
+    """Spawn a headless specialist for one self-contained task; return {role, task, ok, result, tools}."""
+    instruction, tool_names = _ROLES.get(role, _ROLES["general"])
+    allowed = {n for n in tool_names if n in SKILL_NAMES}
+    system = (SUBAGENT_SYSTEM
+              .replace("{role}", role)
+              .replace("{instruction}", instruction)
+              .replace("{context}", _now_context())
+              .replace("{catalog}", _catalog_subset(allowed)))
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": task}]
+    await _emit(on_progress, "executing", f"{role} agent → {task[:60]}")
+    text, ok, tools = await _subagent_loop(messages, allowed, role, on_progress)
+    log.info("subagent[%s] done ok=%s tools=%s task=%r", role, ok, tools, task[:120])
+    return {"role": role, "task": task, "ok": ok, "result": text or "(no result)", "tools": tools}
+
+
+async def _subagent_loop(messages: list[dict], allowed: "set[str]", role: str,
+                         on_progress: Progress) -> tuple[str, bool, list[str]]:
+    """A bounded, headless ReAct loop for a sub-agent. Returns (result_text, any_tool_ok, tools_used)."""
+    s = get_settings()
+    tools_used: list[str] = []
+    ok_any = False
+    for step in range(max(1, s.subagent_max_steps)):
+        try:
+            content = await llm.complete(messages, json_mode=True)
+        except Exception as e:  # noqa: BLE001
+            log.warning("subagent[%s] step failed: %s", role, e)
+            return (f"couldn't complete the {role} task — the model was unreachable.", ok_any, tools_used)
+
+        obj = _parse(content)
+        if not isinstance(obj, dict):
+            return ((content or "").strip(), ok_any, tools_used)
+        if "final" in obj:
+            return (str(obj.get("final") or "").strip(), True, tools_used)
+        if obj.get("choice"):  # a sub-agent has no user to ask — push it to decide and act
+            messages.append({"role": "assistant", "content": json.dumps(obj)})
+            messages.append({"role": "user", "content": "You can't ask the user — you're a sub-agent. "
+                             "Pick the most sensible option yourself and act, or give your final "
+                             "result as {\"final\":\"...\"}."})
+            continue
+
+        tool = obj.get("tool") or obj.get("skill")
+        if not tool:
+            final = ((obj.get("params") or {}).get("text") or content or "").strip()
+            if final:
+                return (final, ok_any, tools_used)
+            messages.append({"role": "assistant", "content": json.dumps(obj)})
+            messages.append({"role": "user", "content": "Act now: a tool call or your final result as JSON."})
+            continue
+        params = obj.get("params") if isinstance(obj.get("params"), dict) else {}
+        messages.append({"role": "assistant", "content": json.dumps(obj)})
+
+        # Enforce the sub-agent's toolset and the no-approval rule; otherwise dispatch as usual.
+        if tool in ("final", "answer", "reply", "respond"):
+            return (str(params.get("text") or "").strip(), ok_any, tools_used)
+        if tool == "delegate":
+            result = {"ok": False, "summary": "sub-agents can't delegate further — use your own tools."}
+        elif tool not in allowed:
+            result = {"ok": False, "summary": f"'{tool}' isn't available to the {role} agent; "
+                      "use one of your tools or finish with your result."}
+        elif tool == "run_command":
+            command = str(params.get("command", "")).strip()
+            if classify_command(command).verdict != "allow":
+                result = {"ok": False, "summary": "that command needs the user's approval, which a "
+                          "sub-agent can't get — try a read-only check or report what you found."}
+            else:
+                result = await _run_and_observe(tool, params, on_progress, label=f"{role} agent")
+                tools_used.append(tool)
+        else:
+            result = await _run_and_observe(tool, params, on_progress, label=f"{role} agent")
+            tools_used.append(tool)
+
+        ok_any = ok_any or bool(result.get("ok"))
+        obs: dict[str, Any] = {"ok": result.get("ok"), "summary": result.get("summary"),
+                               "data": result.get("data")}
+        if not result.get("ok"):
+            obs["error"] = result.get("error") or result.get("detail")
+        messages.append({"role": "user",
+                         "content": "OBSERVATION: " + json.dumps(obs, ensure_ascii=False)[:OBS_LIMIT]})
+
+    # Out of steps — force a concise wrap-up.
+    messages.append({"role": "user", "content": "Stop and report your result now as {\"final\":\"...\"} — "
+                     "one or two factual sentences on what you did or found."})
+    try:
+        obj = _parse(await llm.complete(messages, json_mode=True)) or {}
+        return (str(obj.get("final") or "").strip() or "done.", ok_any, tools_used)
+    except Exception:  # noqa: BLE001
+        return ("done.", ok_any, tools_used)
 
 
 async def execute_approved(skill: str, params: dict[str, Any], *, transcript: str | None = None,

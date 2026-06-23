@@ -109,6 +109,15 @@ class Settings(BaseSettings):
     require_confirm_medium_risk: bool = True
     enable_review: bool = True   # second AI pass: review the result and report the real outcome
 
+    # --- Multi-agent (coordinator + delegated sub-agents) ------------------
+    # The main loop can delegate a focused sub-goal to a specialist sub-agent — its own role,
+    # tighter prompt, and a subset of the tools — and run several in parallel. Sub-agents are
+    # headless: they never speak, ask the user, or run approval-gated/sudo commands; the
+    # coordinator keeps the voice and any approvals. Turn this off to force the classic single agent.
+    subagents_enabled: bool = True
+    subagent_max_steps: int = 6      # tool-steps a sub-agent may take before it must conclude
+    max_parallel_agents: int = 3     # cap on sub-agents one delegate call runs concurrently
+
 
 @lru_cache
 def get_settings() -> Settings:
