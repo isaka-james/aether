@@ -43,6 +43,10 @@ _BLOCK_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r">\s*/dev/(sd|nvme|mmcblk|disk)"), "overwriting a block device"),
     (re.compile(r"\b(fdisk|parted|sgdisk|gdisk)\b"), "rewriting the partition table"),
     (re.compile(r"\brm\s+(-[a-z]*\s+)*(/|~|/\*|\$HOME)\s*$"), "deleting the root or home directory"),
+    # Wiping a whole critical system directory (the dir itself, not a file inside it) bricks the
+    # machine irreversibly — block it. `rm -rf /usr/local/foo` still drops to CONFIRM below.
+    (re.compile(r"\brm\s+(-[a-z]*\s+)*/(etc|usr|s?bin|lib(32|64)?|boot|var|sys|proc|opt|root|dev|home)/?\s*$"),
+     "wiping a critical system directory"),
     (re.compile(r"\bchmod\s+(-R\s+)?0?[0-7]{3,4}\s+/\b"), "changing permissions on / (root)"),
     (re.compile(r"\bchown\s+(-R\s+)?\S+\s+/\b"), "changing ownership of / (root)"),
     (re.compile(r">\s*/etc/(passwd|shadow|sudoers)"), "overwriting critical authentication files"),

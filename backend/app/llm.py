@@ -160,8 +160,19 @@ async def _complete_anthropic(api_key: str, model: str, messages: list[dict],
     # Anthropic takes the system prompt out-of-band and only user/assistant turns inline.
     system = "\n\n".join(m["content"] for m in messages
                          if m.get("role") == "system" and m.get("content"))
-    convo = [{"role": m["role"], "content": m.get("content", "")}
-             for m in messages if m.get("role") in ("user", "assistant")]
+    # Anthropic requires strictly ALTERNATING user/assistant turns, but the agent loop legitimately
+    # emits consecutive same-role messages (an OBSERVATION right after a nudge, a verification note
+    # after an observation, the out-of-steps prompt). Coalesce runs of the same role so the
+    # conversation is always valid — the OpenAI-style providers accept either form.
+    convo: list[dict] = []
+    for m in messages:
+        if m.get("role") not in ("user", "assistant"):
+            continue
+        content = m.get("content", "")
+        if convo and convo[-1]["role"] == m["role"]:
+            convo[-1]["content"] += "\n\n" + content
+        else:
+            convo.append({"role": m["role"], "content": content})
     # No temperature / thinking config: Opus-class models reject sampling params, and the
     # system prompt already constrains the reply to a single JSON object (so adaptive
     # thinking, which would add latency here, is unnecessary for this fast decision loop).

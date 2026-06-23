@@ -12,7 +12,7 @@ hint (`safe` vs `powerful`) surfaced as "[impactful]" so the model treats high-i
 care. Anything not covered here is handled by `run_command`, whose output is screened for safety
 and (for powerful / root commands) approved by the user.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 # Category labels (also the section headings in the rendered catalog), in display order.

@@ -103,11 +103,12 @@ async def handle(text: str, *, transcript: str | None = None,
               .replace("{delegation}", _DELEGATION_PROMPT if s.subagents_enabled else "")
               .replace("{music_dir}", s.music_dir)
               .replace("{projects_dir}", s.projects_dir))
-    messages = [{"role": "system", "content": system}]
-    # Inject the refined objective + success criteria as guidance the agent works to (and later verifies).
+    # Fold the refined objective + success criteria into the system prompt as guidance the agent
+    # works to (and later verifies). Kept in the single system message for provider portability.
     obj_note = understand.objective_note(intent, text) if intent else ""
     if obj_note:
-        messages.append({"role": "system", "content": obj_note})
+        system = system + "\n\n" + obj_note
+    messages = [{"role": "system", "content": system}]
     # Short follow-up memory: replay recent turns so "and now mute it" resolves in context.
     for turn in context:
         if turn.get("content"):
