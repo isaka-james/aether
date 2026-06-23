@@ -6,6 +6,23 @@ from ._util import QDBUS, fail, has, need_tool, ok, run
 from .registry import skill
 
 _SINK = "@DEFAULT_SINK@"
+_SOURCE = "@DEFAULT_SOURCE@"
+
+
+@skill("mic")
+def mic(params):
+    """Mute, unmute, or toggle the microphone (the default PipeWire/Pulse input source)."""
+    action = str(params.get("action", "mute")).lower()
+    table = {
+        "mute":   (["pactl", "set-source-mute", _SOURCE, "1"], "Microphone muted."),
+        "unmute": (["pactl", "set-source-mute", _SOURCE, "0"], "Microphone unmuted."),
+        "toggle": (["pactl", "set-source-mute", _SOURCE, "toggle"], "Microphone toggled."),
+    }
+    if action not in table:
+        return fail(f"Unknown mic action '{action}'. Use mute, unmute, or toggle.")
+    argv, msg = table[action]
+    rc, _, err = run(argv)
+    return ok(msg) if rc == 0 else fail("Couldn't change the microphone.", error=err)
 
 
 @skill("set_volume")

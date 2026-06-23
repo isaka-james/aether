@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Aether host agent.
 
-A tiny, dependency-free HTTP service that runs natively in the user's KDE session.
+A tiny, dependency-free HTTP service that runs natively in the user's desktop session.
 It is the *only* component allowed to touch the host: the Dockerized backend sends
 it validated skills to execute and synthesized speech to play. Authenticated with a
 shared token (X-Aether-Token).

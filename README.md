@@ -1,124 +1,127 @@
+<div align="center">
+
 # ◈ Aether
 
-A self-hosted voice/text assistant that controls your KDE Linux machine. Speak (or
-type) from any device on your network — *"how many Bluetooth devices are connected?"*,
-*"open Chrome"*, *"set volume to 30"* — and Aether transcribes it, reasons about it
-with the **DeepSeek** API, safely runs it on your machine, and speaks the result back
-through your speakers.
+**Talk to your computer. It listens, and it acts.**
 
-Speech (Whisper) and voice (Kokoro) run locally on CPU; the reasoning LLM is DeepSeek's
-cloud API (chosen after local CPU inference proved far too slow on low-end hardware).
+Aether is a self hosted voice assistant for your Linux desktop. Speak or type from your
+phone, laptop, or tablet, and it runs things on your machine and talks back. You choose the AI
+model behind it, and everything stays on your computer unless you decide otherwise.
 
-## How it works
+It answers in the calm, dry voice of a butler who is impressed by nothing, so even the small
+stuff feels like a small luxury.
 
-```
-  Phone / laptop on the LAN
-        │  text or voice (HTTPS/WS)
-        ▼
-┌─────────────────────────────────────┐        ┌──────────────────────────┐
-│  Docker: FastAPI backend (the brain) │        │  Host (native, the hands)│
-│  • Web UI + JWT auth                 │        │                          │
-│  • Whisper STT (faster-whisper, int8)│──http──▶│  Host agent (stdlib)     │
-│  • Kokoro TTS (voice: sky)           │  token │  • executes skills       │
-│  • LLM orchestration + safety        │        │  • plays audio (PipeWire)│
-│  • Postgres (history/favourites) +   │        │  • Bluetooth/KDE/volume… │
-│    Redis (context/cache/fan-out)     │        │  • notification recorder │
-└──────────────┬──────────────────────┘        └──────────────────────────┘
-        │ https│                                
-        ▼      ▼
- host agent   DeepSeek API (deepseek-chat)
-  (8765)
-```
+</div>
 
-The backend is sandboxed in Docker; a small **host agent** is the only thing that
-touches your machine, exposing a fixed, audited set of skills. See
-[`docs/CAPABILITIES.md`](docs/CAPABILITIES.md) for the full feature list and
-[`host-agent/README.md`](host-agent/README.md) for the agent's security model.
+---
 
-## Request lifecycle
+## What it can do
 
-1. You hold the mic in the web UI and speak (voice is preferred; text also works).
-2. The browser uploads the audio; **Whisper** transcribes it to text.
-3. **DeepSeek** (`deepseek-chat`, JSON mode) picks one skill + parameters as JSON.
-4. The **safety classifier** screens any free-form shell command (block / confirm / allow).
-5. The **host agent** runs the skill and returns a raw result.
-6. A **second AI pass reviews that result** and phrases the real outcome — confirming
-   success with the actual data, or saying plainly if it failed and why.
-7. **Kokoro** synthesizes the reply in the *sky* voice; the host agent plays it on your speakers.
-8. A "task done" notification is pushed to every connected web client over WebSocket.
+Just say what you want. A few examples:
 
-## Prerequisites (host)
+- "Lock the screen", or "unlock it" 
+- "Play some jazz on YouTube", "turn the video down", "skip this", "stop"
+- "Read my notifications"
+- "Set the volume to 20", "mute my mic"
+- "Dim the screen to 30"
+- "Find my budget spreadsheet"
+- "Open github.com", or "open my downloads folder"
+- "Copy this to the clipboard", or "what's on my clipboard?"
+- "Take a photo with the webcam"
+- "How much RAM is free?", "what's my battery?", "am I on wifi?"
+- "Open Chrome", "how many windows are open?", "close this tab"
+- "What's the weather? Do I need a jacket?"
 
-- Docker + Docker Compose
-- A **DeepSeek API key** (https://platform.deepseek.com) → put it in `.env` as `DEEPSEEK_KEY`
-- KDE/Plasma tools used by the agent: `bluetoothctl`, `pactl`, `qdbus6`,
-  `notify-send`, `spectacle`, `nmcli`, `gtk-launch`, `loginctl`, plus `paplay` or
-  `ffplay` for audio. For window/tab/input skills: `wmctrl`, `xdotool`, `xinput`,
-  `playerctl` (X11/XWayland).
+This is just a taste. Aether is a real agent, not a fixed list of commands. When there is no
+ready made action for something, it looks around your machine, finds the right tool, and runs
+it, so it can do far more than the examples above. It also knows which tools are installed
+here, so if something needs setting up it tells you plainly instead of failing. When it is
+unsure it asks you a quick question in the web page, and anything risky waits for your approval
+first. Full list in [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
 
-## Setup
+## Install
+
+From inside your desktop session, open a terminal and run:
 
 ```bash
-# 1. Configure
-cp .env.example .env
-#   edit .env: set a username/password, and pick ONE strong value used in BOTH
-#   AETHER_JWT_SECRET and AETHER_HOST_AGENT_TOKEN (the latter must match the agent).
-
-# 2. Start the host agent (runs in your KDE session)
-cd host-agent
-AETHER_HOST_AGENT_TOKEN='<your token>' python3 agent.py
-#   …or install the systemd --user service (see host-agent/README.md)
-
-# 3. Start the backend
-cd ..
-docker compose up --build
+git clone https://github.com/isaka-james/aether && cd aether
+bash scripts/install.sh
 ```
 
-Open `http://<this-pc-ip>:8000` from any device on the same network and sign in.
-First launch downloads the Whisper and Kokoro models into a Docker volume (one time).
+The installer asks a few simple questions (your login, which AI model, what to set up), then
+starts everything and shows you the link to open. It also sets Aether to start every time you
+log in, so it is always there. The first run downloads a few things and takes a few minutes.
 
-### Accessing the app
+To remove it later: `bash scripts/uninstall.sh`.
 
-- **Locally:** open `http://localhost:8000` (voice works — `localhost` is a secure
-  context) or `http://<lan-ip>:8000` from another LAN device (typing only, since plain
-  HTTP isn't a secure context for the microphone).
-- **Remotely / with voice:** expose it with ngrok, which provides HTTPS so the mic works:
-  ```bash
-  ngrok http 8000
-  ```
-  Open the `https://…ngrok…` URL and sign in. The client already uses `wss://` and sends
-  the `ngrok-skip-browser-warning` header so live phases work through the tunnel.
+## Updating
 
-> The login (username/password + JWT) is the only thing protecting the app — use a
-> strong `AETHER_PASSWORD` before exposing it over a tunnel.
+To get the latest version, from the project folder run:
 
-## Resource notes
-
-The heavy reasoning now runs in DeepSeek's cloud, so the host only does STT + TTS on
-CPU. Local footprint is small: faster-whisper `tiny` (~0.5 GB) + Kokoro (~0.4 GB).
-
-> History: this started fully local with Ollama, but a 2-core / 12 GB / no-GPU box ran
-> 3B–7B models at ~0.4 tok/s (minutes per command). Moving the LLM to DeepSeek dropped
-> a command to ~10 s end-to-end. Whisper/Kokoro stay local. The backend needs outbound
-> internet to reach `api.deepseek.com`.
-
-Per-command latency is now dominated by Kokoro TTS + playback (a few seconds), not the LLM.
-
-## Layout
-
-```
-backend/        FastAPI app (Docker): auth, STT, TTS, LLM orchestration, safety, web UI
-  app/          main.py, orchestrator.py, llm.py, stt.py, tts.py, safety.py, skills.py,
-                db.py (Postgres), cache.py (Redis), notifications.py (live fan-out) …
-  web/          static client (login, push-to-talk, live notifications)
-host-agent/     native stdlib service: executes skills + plays audio + records notifications
-docs/           CAPABILITIES.md — what Aether can do, and the roadmap
-docker-compose.yml   backend + Postgres (db) + Redis (redis)
+```bash
+bash scripts/update.sh
 ```
 
-### Persistence (Postgres + Redis)
+It pulls the new code, keeps your settings and data, rebuilds the backend, and restarts the
+assistant. Your downloaded voice models, history, and favourites stay where they are. The
+database updates its own structure automatically, so an update never breaks your data. If a new
+setting was added, it is appended to your `.env` with a sensible default so you can tweak it.
 
-`docker compose up` also starts **Postgres** (history, notification archive, favourites &
-preferences) and **Redis** (follow-up context for "and now mute it", news cache, live
-notification fan-out). Both are optional — if either is down the backend logs a warning and
-keeps working. Set `POSTGRES_PASSWORD` in `.env`; `GET /api/health` reports `database`/`redis`.
+## Use it
+
+Open the link the installer printed and sign in:
+
+- On this computer: `http://localhost:8473` (voice works here)
+- Another device on your wifi: `http://your-pc-ip:8473` (typing works here)
+- From anywhere: run `ngrok http 8473` and open the `https` link it gives you. This is the easy
+  way to reach your PC from outside your home, with no router setup.
+
+Tap the orb and talk, or type in the box.
+
+### Talking by voice on a phone
+
+Phones (especially iPhones and iPads) only allow the microphone on secure `https` pages. So for
+voice on a phone, open the **ngrok `https` link**, not the plain `http` address. Typing always
+works, even without https, if you would rather just chat.
+
+Tip: in your browser menu, choose **Install** or **Add to Home Screen**. Aether then opens like
+a normal app, full screen, with voice and notifications.
+
+If you use ngrok a lot, claim its **free static domain** so your link never changes. A fixed
+address is easier to use and easier to keep locked down. See [docs/SECURITY.md](docs/SECURITY.md).
+
+## Pick your AI model
+
+Aether works with DeepSeek (the default), OpenAI, Claude, or a model on your own computer.
+A quick guide:
+
+- **Local model**: free and fully private. Our top pick if you have a decent GPU.
+- **DeepSeek**: the budget cloud option. Even a heavy user spends about 2 dollars a month, less
+  than the coffee you drink while it works.
+- **Claude or OpenAI**: the sharpest, and the priciest. For when money is not the question.
+
+Switch any time by editing one line. See [docs/PROVIDERS.md](docs/PROVIDERS.md).
+
+## Privacy and security
+
+Aether runs on your own machine. The only thing that leaves it is the AI request to the
+provider you picked, and you can avoid even that by running a local model. Your login protects
+everything, the assistant runs in a sandbox, and risky commands always ask before they run. If
+you plan to open it to the internet, read [docs/SECURITY.md](docs/SECURITY.md) first.
+
+## What you need
+
+- A Linux desktop. KDE, GNOME, XFCE, and others all work, and the installer adds the tools
+  yours needs. KDE Plasma gets the most polish.
+- Docker
+- Google Chrome (only for the YouTube features)
+- An AI key from DeepSeek, OpenAI, or Claude, or a model running locally (no key needed)
+
+---
+
+<div align="center">
+
+Made for people who want a computer that listens, on their own terms.
+If you like it, a star helps others find it.
+
+</div>

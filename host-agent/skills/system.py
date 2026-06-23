@@ -7,7 +7,7 @@ import time
 
 import notify_recorder
 
-from ._util import QDBUS, fail, ok, run
+from ._util import QDBUS, fail, has, ok, run
 from .registry import skill
 
 
@@ -38,6 +38,11 @@ def _battery():
 @skill("system_info")
 def system_info(params):
     what = str(params.get("what", "all")).lower()
+    if what in ("system", "os", "desktop", "distro", "session", "machine"):
+        from .capabilities import machine
+        mi = machine()
+        return ok(f"{mi.get('distro') or 'Linux'}, the {mi.get('desktop') or 'unknown'} desktop, "
+                  f"{mi.get('session_type') or 'unknown'} session, host {mi.get('hostname')}.", **mi)
     parts, data = [], {}
     mem = _meminfo()
     total = mem["MemTotal"] / 1024 / 1024
@@ -58,6 +63,12 @@ def system_info(params):
     if what in ("battery", "power", "all") and (bat := _battery()):
         parts.append(f"Battery: {bat}")
         data["battery"] = bat
+    if what == "all":
+        from .capabilities import machine
+        mi = machine()
+        parts.append(f"System: {mi.get('distro') or 'Linux'} on {mi.get('desktop') or 'unknown'} "
+                     f"({mi.get('session_type') or 'unknown'})")
+        data["system"] = mi
 
     return ok(". ".join(parts) + "." if parts else "No info available.", **data)
 
@@ -76,18 +87,50 @@ def power_profile(params):
 @skill("screenshot")
 def screenshot(_):
     path = f"/tmp/aether-shot-{int(time.time())}.png"
-    rc, _, err = run(["spectacle", "-f", "-b", "-n", "-o", path], timeout=15)
-    if rc == 0 and os.path.exists(path):
-        return ok("Screenshot captured.", path=path)
-    return fail("Couldn't take a screenshot.", error=err)
+    # Use whichever screenshot tool is installed and actually writes the file. Covers KDE
+    # (spectacle), GNOME (gnome-screenshot), XFCE, wlroots/sway (grim), and plain X11.
+    candidates = [
+        ("spectacle", ["spectacle", "-f", "-b", "-n", "-o", path]),
+        ("gnome-screenshot", ["gnome-screenshot", "-f", path]),
+        ("xfce4-screenshooter", ["xfce4-screenshooter", "-f", "-s", path]),
+        ("grim", ["grim", path]),
+        ("scrot", ["scrot", "-o", path]),
+        ("maim", ["maim", path]),
+        ("import", ["import", "-window", "root", path]),  # ImageMagick
+    ]
+    last = ""
+    for tool, argv in candidates:
+        if not has(tool):
+            continue
+        _, _, err = run(argv, timeout=15)
+        if os.path.exists(path):
+            return ok("Screenshot captured.", path=path, tool=tool)
+        last = err or last
+    return fail("Couldn't take a screenshot. Install one of: spectacle, gnome-screenshot, "
+                "grim, or scrot.", error=last)
 
 
 @skill("lock_screen")
 def lock_screen(_):
-    rc, _, err = run(["loginctl", "lock-session"])
-    if rc != 0:
-        rc, _, err = run([QDBUS, "org.freedesktop.ScreenSaver", "/ScreenSaver", "Lock"])
-    return ok("Locking the screen.") if rc == 0 else fail("Couldn't lock the screen.", error=err)
+    # Try the portable ways in turn, so it works on KDE, GNOME, XFCE, and most others.
+    attempts = [
+        ["loginctl", "lock-session"],                                   # logind: honoured by most desktops
+        ["dbus-send", "--session", "--type=method_call",
+         "--dest=org.freedesktop.ScreenSaver",
+         "/org/freedesktop/ScreenSaver", "org.freedesktop.ScreenSaver.Lock"],  # freedesktop (GNOME/KDE)
+        ["dbus-send", "--session", "--type=method_call",
+         "--dest=org.freedesktop.ScreenSaver", "/ScreenSaver", "org.freedesktop.ScreenSaver.Lock"],
+        ["xdg-screensaver", "lock"],                                    # xdg-utils
+        ["gnome-screensaver-command", "-l"],
+        ["xfce4-screensaver-command", "-l"],
+        [QDBUS, "org.freedesktop.ScreenSaver", "/ScreenSaver", "Lock"],  # KDE
+    ]
+    err = ""
+    for argv in attempts:
+        rc, _, err = run(argv)
+        if rc == 0:
+            return ok("Locking the screen.")
+    return fail("Couldn't lock the screen.", error=err)
 
 
 @skill("unlock_screen")
@@ -121,10 +164,16 @@ _POWER = {
 def power_action(params):
     action = str(params.get("action", "")).lower().strip()
     if action in ("logout", "log out", "sign out"):
-        rc, _, err = run([QDBUS, "org.kde.Shutdown", "/Shutdown", "logout"])
-        if rc != 0:  # fall back to ending our own session
-            rc, _, err = run(["loginctl", "terminate-user", str(os.getuid())])
-        return ok("Logging out.") if rc == 0 else fail("Couldn't log out.", error=err)
+        # Try each desktop's logout, then fall back to ending our own session via logind.
+        err = ""
+        for argv in ([QDBUS, "org.kde.Shutdown", "/Shutdown", "logout"],
+                     ["gnome-session-quit", "--logout", "--no-prompt"],
+                     ["xfce4-session-logout", "--logout"],
+                     ["loginctl", "terminate-user", str(os.getuid())]):
+            rc, _, err = run(argv)
+            if rc == 0:
+                return ok("Logging out.")
+        return fail("Couldn't log out.", error=err)
     if action not in _POWER:
         return fail(f"Unknown power action '{action}'. Try suspend, hibernate, reboot, "
                     "shutdown, or logout.")

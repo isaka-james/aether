@@ -2,8 +2,17 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>Aether</title>
+  <!-- Installable web app (Add to Home Screen / Install) -->
+  <meta name="theme-color" content="#060810" />
+  <link rel="manifest" href="/static/manifest.webmanifest" />
+  <link rel="icon" type="image/svg+xml" href="/static/icon.svg" />
+  <link rel="apple-touch-icon" href="/static/icon-192.png" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Aether" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -59,12 +68,13 @@
         <button id="rec-send" class="btn-primary">Send ↑</button>
       </div>
 
-      <!-- Populated with the user's most-asked requests by loadSuggestions(); these are the
-           first-paint fallback shown until that resolves (or if persistence is off). -->
+      <!-- Populated with the user's most-RECENT requests by loadSuggestions() (then most-asked,
+           then these first-paint defaults shown until that resolves / if persistence is off). -->
+      <p id="hint-label" class="hint-label hidden">Recent</p>
       <div id="hint" class="hint">
-        <button class="chip">play nataka kulewa</button>
+        <button class="chip">play lofi hip hop on youtube</button>
         <button class="chip">what's the weather</button>
-        <button class="chip">brief me on the news</button>
+        <button class="chip">lock the screen</button>
         <button class="chip">make the video full screen</button>
         <button class="chip">how many windows are open</button>
       </div>
@@ -93,6 +103,7 @@
   <div id="approve" class="overlay hidden">
     <div class="sheet glass approve">
       <div class="approve-head"><span class="shield">🛡️</span> Approval needed
+        <span id="approve-sev" class="badge sev hidden"></span>
         <span id="approve-badge" class="badge hidden">ROOT</span></div>
       <p id="approve-reason" class="sub"></p>
       <code id="approve-cmd"></code>

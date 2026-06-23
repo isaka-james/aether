@@ -1,8 +1,8 @@
 """Window, tab and keyboard skills.
 
-Window listing/closing/focusing uses **KWin scripting** so it works on Wayland (sees
-native Wayland windows, not just XWayland). Tab/keystroke skills use xdotool, which is
-XWayland-only and best-effort.
+Window listing/closing/focusing uses KWin scripting on KDE (so it sees native Wayland
+windows) and falls back to wmctrl on other desktops (GNOME, XFCE, and so on, over X11 or
+XWayland). Tab/keystroke skills use ydotool or xdotool and are best-effort.
 """
 from __future__ import annotations
 

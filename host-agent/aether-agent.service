@@ -21,7 +21,7 @@ Type=simple
 WorkingDirectory=%h/Projects/aether/host-agent
 Environment=AETHER_HOST_AGENT_TOKEN=please-change-this-shared-secret
 Environment=AETHER_AGENT_HOST=0.0.0.0
-Environment=AETHER_AGENT_PORT=8765
+Environment=AETHER_AGENT_PORT=8474
 ExecStart=/usr/bin/python3 agent.py
 Restart=on-failure
 RestartSec=3

@@ -3,6 +3,7 @@ notifications over WebSocket, and the static web client.
 """
 import asyncio
 import logging
+import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from fastapi import (Depends, FastAPI, File, HTTPException, UploadFile,
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import cache, db, notifications, orchestrator, stt
+from . import cache, db, llm, notifications, orchestrator, stt
 from .auth import create_token, decode_token, require_user, verify_credentials
 from .config import get_settings
 from .models import (ApproveCommand, CommandResult, LoginRequest, TextCommand,
@@ -21,6 +22,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 log = logging.getLogger("aether")
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+# Serve the PWA manifest with the correct type so browsers offer to install the app.
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 
 @asynccontextmanager
@@ -161,27 +164,34 @@ async def command_voice(
 
 # Shown as suggestion chips before any history exists (or if the DB is off).
 _DEFAULT_SUGGESTIONS = [
-    "play nataka kulewa", "what's the weather", "brief me on the news",
-    "make the video full screen", "how many windows are open", "lock the screen",
+    "play lofi hip hop on youtube", "what's the weather", "lock the screen",
+    "make the video full screen", "how many windows are open", "how much RAM is free",
 ]
 
 
 @app.get("/api/suggestions")
 async def suggestions(user: str = Depends(require_user)):
-    """The user's most-asked requests, for the web client's quick chips. Falls back to a
-    sensible default set when there's no history yet (or persistence is disabled)."""
-    items = await db.top_requests(limit=6, session=user)
-    if len(items) < 3:  # not enough real history — pad/replace with defaults
-        seen = {i.lower() for i in items}
-        items += [d for d in _DEFAULT_SUGGESTIONS if d.lower() not in seen]
-    return {"suggestions": items[:6]}
+    """Quick chips for the home page: the user's most-RECENT requests first, then their
+    most-asked, then sensible defaults — de-duplicated and capped. Recency leads so the home
+    reflects what they just did. `from_history` lets the client label the row ("Recent" vs a
+    generic prompt) and is False when there's no real history (or persistence is off)."""
+    recent = await db.recent_requests(limit=6, session=user)
+    frequent = await db.top_requests(limit=6, session=user)
+    items: list[str] = []
+    seen: set[str] = set()
+    for source in (recent, frequent, _DEFAULT_SUGGESTIONS):
+        for c in source:
+            key = (c or "").strip().lower()
+            if key and key not in seen:
+                items.append(c.strip())
+                seen.add(key)
+    return {"suggestions": items[:6], "from_history": bool(recent or frequent)}
 
 
 @app.get("/api/health")
 async def health():
     s = get_settings()
-    return {"ok": True, "provider": "deepseek", "model": s.deepseek_model,
-            "llm_configured": bool(s.deepseek_api_key), "voice": s.kokoro_voice,
+    return {"ok": True, "llm": llm.provider_info(), "voice": s.kokoro_voice,
             "whisper": s.whisper_model, "database": db.enabled(), "redis": cache.enabled()}
 
 
@@ -206,6 +216,12 @@ async def ws_notifications(ws: WebSocket, token: str = ""):
 @app.get("/")
 async def index():
     return FileResponse(WEB_DIR / "index.html")
+
+
+@app.get("/sw.js")
+async def service_worker():
+    # Served from the root so the service worker can control the whole app (PWA install).
+    return FileResponse(WEB_DIR / "sw.js", media_type="application/javascript")
 
 
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")

@@ -1,97 +1,52 @@
-# Aether — Capabilities
+# What Aether can do
 
-What the system can do today, and where it's heading.
+You talk, it acts, and it replies like a composed butler who is hard to impress. Here is the
+kind of thing you can say.
 
-## Interaction
+## Everyday things
 
-- **Voice** (preferred): push-to-talk in the web UI → Whisper (`tiny`/`base`, int8, CPU).
-- **Text**: type a command and hit enter.
-- **Two-pass reasoning**: the model first picks an action, then — after it runs — a
-  second pass reviews the *real* result and reports the actual outcome (or why it failed).
-- **Spoken replies**: Kokoro TTS in the *sky* voice, played on the **host** speakers.
-- **Live task phases**: the web client shows each phase over WebSocket —
-  📤 Sending → 📥 Received by Aether → 🧠 Thinking → ⚙️ Running → 🔎 Checking result → 🔊 Speaking.
-- **Multi-device**: sign in from any device on the LAN (or via a TLS reverse proxy).
+| Say something like | What happens |
+|---|---|
+| "Lock the screen", "unlock it" | Locks or unlocks your session |
+| "Play some lofi on YouTube" | Opens Chrome and plays it |
+| "Turn the video down", "skip this", "full screen", "stop" | Controls the YouTube video |
+| "Read my notifications", "did I miss anything?" | Reads what popped up on your desktop |
+| "Set the volume to 20", "mute" | Changes the system volume |
+| "Mute my mic", "unmute the microphone" | Turns the microphone on or off |
+| "Dim the screen to 30" | Sets the screen brightness |
+| "Find my budget spreadsheet" | Searches your files by name |
+| "Open github.com", "open my downloads folder" | Opens a link, file, or folder |
+| "Copy this to the clipboard", "what's on my clipboard?" | Reads or sets the clipboard |
+| "Take a photo with the webcam" | Captures a webcam photo |
+| "How much RAM is free?", "what's my battery?", "am I on wifi?" | Tells you your computer's status |
+| "Open Chrome", "how many windows are open?", "close this tab" | Controls apps and windows |
+| "Turn off bluetooth", "what's connected?" | Manages Bluetooth and wifi |
+| "What's the weather? Do I need a jacket?" | Checks the weather and answers |
+| "Suspend the machine", "reboot" | Power actions (only when you clearly ask) |
+| "Remember this as a favourite", "play my favourite" | Saves and recalls what you like |
 
-## Skills
+## It can do more than this list
 
-Each request is handled by the configured model (DeepSeek) in an agentic loop that chains
-one or more skills. The host agent implements them in a modular `skills/` package (one
-module per domain, registered via an `@skill` decorator).
+Aether is a real agent, not a menu of fixed commands. When there is no ready made action for
+what you asked, it looks at your machine, finds the right tool, and runs the commands itself.
+So in practice it can do almost anything you could do at the keyboard.
 
-| Domain | Skills | Example phrasing |
-|---|---|---|
-| Bluetooth | `bluetooth_status`, `bluetooth_power` | "turn off bluetooth", "what's connected?" |
-| Network | `wifi_status`, `wifi_power` | "turn wifi on", "what network am I on?" |
-| Display | `get_brightness`, `brightness` | "what's my brightness?", "dim to 40" |
-| Audio / media | `set_volume`, `media_control`, `now_playing` | "mute", "pause", "what song is this?" |
-| YouTube (real Chrome over CDP) | `play_youtube`, `stop_youtube`, `youtube_volume`, `youtube_control`, `youtube_status` | "play X on youtube", "turn the video down", "skip this", "what's playing on youtube?" |
-| Apps | `open_app`, `close_app`, `running_apps` | "open chrome", "close all my tabs" |
-| Windows / tabs | `list_windows`, `count_windows`, `close_window`, `focus_window`, `close_tab`, `new_tab` | "how many windows?", "close this tab", "switch to chrome" |
-| Keyboard | `press_keys`, `type_text` | "press ctrl+alt+t", "type hello" |
-| Input devices | `list_input_devices`, `set_input_device` | "disable the touchpad" |
-| System | `system_info`, `power_profile`, `screenshot`, `lock_screen`, `unlock_screen`, `power_action`, `notifications`, `clear_notifications`, `notify` | "how much RAM is free?", "lock/unlock the screen", "suspend the machine", "what notifications did I miss?" |
-| Memory (Postgres) | `list_favorites`, `remember_favorite`, `forget_favorite`, `get_preference`, `set_preference`, `play_history` | "play my favourite song", "remember this as a favourite", "set my usual volume to 30", "what do I play most?" |
-| Escape hatch | `run_command` (safety-screened, root-approved) | "list files in my home folder" |
-| Chat | `answer` | "who are you?" |
+Three things it does on purpose:
 
-> **Notifications**: KDE has no API to read notification history, so the host agent runs a
-> `dbus-monitor` recorder that captures them live. The `notifications` skill reads them; the
-> backend archives to Postgres and relays new ones to web clients via Redis.
+- **It knows your machine.** Aether checks your desktop, session type, and which tools are
+  installed, so it adapts to the computer it is on. If an action needs something that is not set
+  up, it tells you plainly (and that the installer can add it) instead of failing quietly. It can
+  also search for a tool or a file when it needs one.
+- **It asks when it is unsure.** If your request could mean a few different things, it shows you
+  a short question in the web page and you tap the answer.
+- **It checks before doing anything risky.** Any command that could change or remove things, or
+  that needs your admin password, waits for you to approve it first. You always see exactly what
+  it will run.
 
-> Window/tab/keyboard/input skills use `wmctrl`/`xdotool`/`xinput` (X11). On a Wayland
-> session they act on XWayland windows only and degrade gracefully otherwise.
+Everything else, it just does, then tells you the result in one line.
 
-## Safety & privileged actions
+## Talking and hearing
 
-`run_command` is the only path to free-form shell, screened twice:
-
-1. **Backend classifier** (`backend/app/safety.py`) sorts every command:
-   - **block** — destructive/irreversible (`rm -rf`, `mkfs`, `dd of=/dev/*`, fork bombs,
-     formatting disks, editing `/etc/passwd`, …). Never runs, even with approval.
-   - **confirm** — powerful but legitimate (`sudo`, `shutdown`, deleting files, killing
-     processes, package removal). Returned as **needs_confirmation**; you approve it in
-     the web UI, which calls `/api/command/approve` (no second LLM pass).
-   - **allow** — everything else. Runs directly.
-2. **Host agent hard block** (`host-agent/skills/shell.py`) independently refuses the
-   worst patterns — even for elevated commands.
-
-**Root execution**: when an approved command uses `sudo`, the backend attaches the host
-root password (`ROOT_PWD` from `.env`) to the agent call and the agent runs it with
-`sudo -S`. The password travels only backend→agent over the token-authed local channel —
-it is **never** included in the result returned to the browser.
-
-Structured skills (`open_app`, `set_volume`, …) are parameterized and bypass the shell.
-
-## Architecture choices
-
-- **Backend in Docker, agent on host.** Isolation by default; the host agent is the
-  single narrow, audited bridge to the machine. The container never gets raw host access.
-- **Modular skills package** on the agent: `skills/<domain>.py` + a decorator registry;
-  the HTTP layer only calls `skills.execute(name, params)`.
-- **LLM via DeepSeek** (cloud, OpenAI-compatible). Decision pass uses JSON mode; both
-  passes use one configured model (`AETHER_DEEPSEEK_MODEL`, default `deepseek-chat`).
-- **Local CPU only for speech**: faster-whisper int8 (STT) and Kokoro ONNX (TTS).
-- **Postgres + Redis, both optional.** Postgres persists history/transcripts, the
-  notification archive, and favourites/preferences; Redis holds follow-up context, the news
-  cache, and notification fan-out. If either is down, the backend warns and keeps working.
-
-## Performance note
-
-The reasoning LLM is cloud-hosted, so per-command latency is ~10 s end-to-end and
-dominated by local Kokoro TTS + playback, not the model. Originally fully local with
-Ollama, but a 2-core / no-GPU box ran every quant at ~0.4 tok/s (minutes per command),
-so the LLM was moved to DeepSeek and Ollama was removed. The backend needs outbound
-internet to `api.deepseek.com`.
-
-## Roadmap / possible additions
-
-- ✅ **Conversation memory & follow-ups** ("and now mute it") — short Redis context history.
-- ✅ **Audit log** of every command — persisted to Postgres (`interactions`).
-- ✅ **Seeing notifications** — live `dbus-monitor` recorder + archive (was DND-only).
-- ✅ **Favourites & preferences** — recall "my favourite song" / "my usual volume".
-- **Wake word** for hands-free activation (e.g. openWakeWord on CPU).
-- **Streaming**: stream TTS audio to the browser as well as the host speakers.
-- **Per-skill permissions** on top of the audit log.
-- **Native Wayland** window control (kdotool / KWin scripting) to replace the X11 tools.
-- **A history/notifications view** in the web UI (data is already persisted).
+- Tap the orb and speak, or type in the box.
+- It understands you with on device speech, and replies out loud in a natural voice.
+- Sign in from your phone, laptop, or tablet. See the main README for how to open it.

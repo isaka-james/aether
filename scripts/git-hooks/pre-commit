@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Refuse to commit environment files that hold secrets.
+#
+# .env carries the JWT secret, LLM API keys and the database/user passwords. A single stray
+# `git add -A` — or a clobbered .gitignore, as happened once — could otherwise drop all of it
+# into history, where it is effectively public forever. .env.example is the safe template.
+#
+# Enabled per clone via `git config core.hooksPath scripts/git-hooks` (done by scripts/install.sh).
+# Bypass for one commit, if you really must: git commit --no-verify
+set -euo pipefail
+
+offenders="$(git diff --cached --name-only --diff-filter=ACM \
+  | grep -E '(^|/)\.env([.][^/]*)?$' \
+  | grep -vE '(^|/)\.env\.(example|sample|template)$' || true)"
+
+if [ -n "$offenders" ]; then
+  exec >&2
+  printf '\033[31m✖ commit blocked\033[0m — these files hold secrets and must stay out of git:\n'
+  printf '%s\n' "$offenders" | sed 's/^/    /'
+  printf '\nThey belong only on the machine (they are in .gitignore). For a shareable\n'
+  printf 'template, copy to .env.example with the secrets stripped. To bypass once:\n'
+  printf '    git commit --no-verify\n'
+  exit 1
+fi

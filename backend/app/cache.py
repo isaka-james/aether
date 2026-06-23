@@ -4,7 +4,7 @@ Three jobs, all optional (no REDIS_URL or an unreachable server → every call i
 no-op and the assistant still works):
   • follow-up context — a short, TTL'd history of recent turns per session so the model can
     resolve "and now mute it" / "turn that down" against what just happened
-  • caching — cache slow lookups (the news briefing) for a few minutes
+  • caching — cache slow lookups for a few minutes
   • pub/sub — a channel the backend uses to fan host notifications out to web clients live
 """
 from __future__ import annotations

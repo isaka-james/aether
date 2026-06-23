@@ -192,6 +192,10 @@ function renderResult(res) {
     state.pending = { skill: res.skill, params: res.params, transcript: res.transcript };
     const root = /needs root|sudo/i.test((res.summary || "") + (res.detail || ""));
     $("approve-badge").classList.toggle("hidden", !root);
+    // Severity chip (low|medium|high|critical) so the user sees how risky the action is.
+    const sev = (res.data && res.data.severity) || "";
+    const sevEl = $("approve-sev");
+    if (sevEl) { sevEl.textContent = sev.toUpperCase(); sevEl.className = "badge sev " + (sev ? sev : "hidden"); }
     $("approve-reason").textContent = res.detail || "This action is powerful — review it before it runs.";
     $("approve-cmd").textContent = (res.params && res.params.command) || res.summary;
     $("approve").classList.remove("hidden");
@@ -280,12 +284,13 @@ $("text").addEventListener("keydown", (e) => { if (e.key === "Enter") { const t 
 // Suggestion chips: clicking one sends it (event delegation, so dynamically-loaded chips work).
 $("hint").addEventListener("click", (e) => { const c = e.target.closest(".chip"); if (c) submitText(c.textContent); });
 
-// Populate the chips with the user's most-asked requests (falls back to defaults server-side).
+// Populate the chips with the user's most-RECENT requests (then most-asked, then defaults —
+// all server-side). The label reads "Recent" once there's real history, else a generic prompt.
 async function loadSuggestions() {
   try {
     const r = await fetch("/api/suggestions", { headers: authH() });
     if (!r.ok) return;
-    const { suggestions } = await r.json();
+    const { suggestions, from_history } = await r.json();
     if (!Array.isArray(suggestions) || !suggestions.length) return;
     const hint = $("hint");
     hint.innerHTML = "";
@@ -294,6 +299,8 @@ async function loadSuggestions() {
       b.className = "chip"; b.textContent = s;
       hint.appendChild(b);
     });
+    const label = $("hint-label");
+    if (label) { label.textContent = from_history ? "Recent" : "Try saying"; label.classList.remove("hidden"); }
   } catch (e) { console.warn("suggestions load failed:", e); }
 }
 $("logout").addEventListener("click", logout);
@@ -312,3 +319,11 @@ function showApp() {
 }
 if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
 if (state.token) showApp(); else { $("login").classList.remove("hidden"); $("app").classList.add("hidden"); }
+
+// Make Aether installable as an app (Install / Add to Home Screen). The service worker only
+// runs on a secure context (https or localhost), so it quietly does nothing on plain http.
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch((e) => console.warn("SW register failed:", e));
+  });
+}
