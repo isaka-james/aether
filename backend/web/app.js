@@ -192,6 +192,10 @@ function renderResult(res) {
     state.pending = { skill: res.skill, params: res.params, transcript: res.transcript };
     const root = /needs root|sudo/i.test((res.summary || "") + (res.detail || ""));
     $("approve-badge").classList.toggle("hidden", !root);
+    // Severity chip (low|medium|high|critical) so the user sees how risky the action is.
+    const sev = (res.data && res.data.severity) || "";
+    const sevEl = $("approve-sev");
+    if (sevEl) { sevEl.textContent = sev.toUpperCase(); sevEl.className = "badge sev " + (sev ? sev : "hidden"); }
     $("approve-reason").textContent = res.detail || "This action is powerful — review it before it runs.";
     $("approve-cmd").textContent = (res.params && res.params.command) || res.summary;
     $("approve").classList.remove("hidden");

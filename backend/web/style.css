@@ -146,6 +146,10 @@ button:active { transform: scale(.96); }
 .approve-head { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 17px; }
 .shield { font-size: 20px; }
 .badge { background: var(--rec); color: #fff; font-size: 10.5px; font-weight: 800; padding: 3px 8px; border-radius: 6px; letter-spacing: .6px; }
+.badge.sev.low { background: rgba(154,166,189,.25); color: var(--ink); }
+.badge.sev.medium { background: var(--warn); color: #1a1205; }
+.badge.sev.high { background: var(--err); color: #fff; }
+.badge.sev.critical { background: var(--rec); color: #fff; }
 .approve code { display: block; background: #04070e; border: 1px solid var(--stroke); border-radius: 12px; padding: 13px 15px; margin: 14px 0; color: #bfe0ff; font: 13.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace; word-break: break-all; }
 .approve .sheet-actions { justify-content: flex-end; }
 

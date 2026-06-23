@@ -585,13 +585,21 @@ async def _loop(messages: list[dict], transcript: str | None, on_progress: Progr
                 command = str(params.get("command", "")).strip()
                 verdict = classify_command(command)
                 if verdict.verdict == "block":
-                    result = {"ok": False, "summary": f"blocked for safety: {verdict.reason}"}
+                    # Catastrophic + irreversible: refused even with approval. Hand the model a clear
+                    # reason (an OBSERVATION, not a dead-end) so it explains and offers a safer route.
+                    result = {"ok": False,
+                              "summary": f"I can't run that — it would risk {verdict.reason}, which is "
+                                         "irreversible, so I won't do it even with approval. Tell me the "
+                                         "underlying goal and I'll find a safe way to get there.",
+                              "data": {"refused": True, "severity": verdict.severity,
+                                       "reason": verdict.reason, "command": command}}
                 elif verdict.verdict == "confirm" and s.require_confirm_medium_risk:
                     root = " (needs root)" if _SUDO.search(command) else ""
                     return CommandResult(ok=False, status="needs_confirmation", transcript=transcript,
                                          skill="run_command", params={"command": command},
                                          summary=f"Approve running{root}: {command}",
-                                         detail=f"{verdict.reason}.")
+                                         detail=f"This {verdict.reason}.",
+                                         data={"severity": verdict.severity, "reason": verdict.reason})
                 else:
                     result = await _run_and_observe(tool, params, on_progress)
             else:
@@ -881,9 +889,11 @@ async def execute_approved(skill: str, params: dict[str, Any], *, transcript: st
     command = str(action.params.get("command", "")).strip()
 
     if skill == "run_command":
-        if classify_command(command).verdict == "block":
+        v = classify_command(command)
+        if v.verdict == "block":
             return CommandResult(ok=False, status="blocked", transcript=transcript, skill=skill,
-                                 params=action.params, summary="I won't run that — it looks dangerous.")
+                                 params=action.params,
+                                 summary=f"I won't run that even on approval — it would risk {v.reason}.")
         s = get_settings()
         if _SUDO.search(command):
             if not s.root_password:
