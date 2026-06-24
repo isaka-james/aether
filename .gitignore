@@ -6,6 +6,10 @@ __pycache__/
 models/
 ngrok.log
 
+# Python virtualenvs and tooling caches
+.venv/
+.pytest_cache/
+
 # host agent runtime + browser venv (created by scripts)
 host-agent/.venv/
 host-agent/*.pid
