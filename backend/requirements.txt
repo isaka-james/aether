@@ -15,7 +15,7 @@ faster-whisper==1.2.1
 requests==2.34.2                 # security: .netrc leak + later CVEs fixed
 kokoro-onnx==0.5.0
 soundfile==0.14.0
-numpy==2.5.0
+numpy==2.4.6
 PyJWT==2.13.0                    # security: algorithm-confusion / DoS / SSRF JWK CVEs fixed
 bcrypt==5.0.0
 pydantic==2.13.4
