@@ -38,6 +38,22 @@ def test_resolve_requires_a_model_for_bare_compatible_provider():
         llm._resolve(Settings(llm_provider="openai-compatible", llm_model="", llm_base_url=""))
 
 
+def test_anthropic_system_is_a_single_cache_controlled_block():
+    # The agent loop re-sends the system prompt on every step; an ephemeral cache breakpoint lets
+    # later steps read it cheaply. System turns are coalesced, in order, into one text block.
+    msgs = [{"role": "system", "content": "A"}, {"role": "system", "content": "B"},
+            {"role": "user", "content": "hi"}]
+    system = llm._anthropic_system(msgs)
+    assert system == [{"type": "text", "text": "A\n\nB",
+                       "cache_control": {"type": "ephemeral"}}]
+
+
+def test_anthropic_system_is_none_without_a_system_message():
+    # No system content -> None (the SDK rejects an empty system block).
+    assert llm._anthropic_system([{"role": "user", "content": "hi"}]) is None
+    assert llm._anthropic_system([{"role": "system", "content": ""}]) is None
+
+
 def test_provider_info_is_secret_free_and_flags_configured(monkeypatch):
     # openai-style providers report configured even without a key (local servers need none)...
     monkeypatch.setattr(llm, "get_settings", lambda: Settings(llm_provider="deepseek"))

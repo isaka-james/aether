@@ -152,14 +152,30 @@ async def _complete_openai(base_url: str, api_key: str, model: str, messages: li
     return resp.choices[0].message.content or ""
 
 
+def _anthropic_system(messages: list[dict]) -> list[dict] | None:
+    """Lift the leading system message(s) into Anthropic's out-of-band system field as a single
+    cache-controlled text block.
+
+    The agent loop re-sends this large prompt (persona + skill catalogue + machine context) on
+    every step of a multi-step request. An ephemeral cache breakpoint lets the steps after the
+    first read it at ~0.1x cost instead of reprocessing the whole prompt each time — the system
+    block is constant within a request, so only user/observation turns appended after it pay full
+    price. (Cross-request reuse is limited because the prompt embeds the current time; the
+    within-request saving — up to MAX_STEPS-1 cache reads per request — is the win here.)"""
+    text = "\n\n".join(m["content"] for m in messages
+                       if m.get("role") == "system" and m.get("content"))
+    if not text:
+        return None
+    return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
+
+
 async def _complete_anthropic(api_key: str, model: str, messages: list[dict],
                               max_tokens: int, timeout: float) -> str:
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY is not set")
     client = _anthropic_client(api_key, timeout)
     # Anthropic takes the system prompt out-of-band and only user/assistant turns inline.
-    system = "\n\n".join(m["content"] for m in messages
-                         if m.get("role") == "system" and m.get("content"))
+    system = _anthropic_system(messages)
     # Anthropic requires strictly ALTERNATING user/assistant turns, but the agent loop legitimately
     # emits consecutive same-role messages (an OBSERVATION right after a nudge, a verification note
     # after an observation, the out-of-steps prompt). Coalesce runs of the same role so the
@@ -177,7 +193,7 @@ async def _complete_anthropic(api_key: str, model: str, messages: list[dict],
     # system prompt already constrains the reply to a single JSON object (so adaptive
     # thinking, which would add latency here, is unnecessary for this fast decision loop).
     resp = await client.messages.create(model=model, max_tokens=max_tokens,
-                                        system=system or None, messages=convo)
+                                        system=system, messages=convo)
     return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
 
 
