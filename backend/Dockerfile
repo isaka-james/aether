@@ -1,6 +1,6 @@
 # Aether backend — FastAPI + faster-whisper (STT) + kokoro-onnx (TTS)
 # CPU-only. Models are cached in mounted volumes, not baked into the image.
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 ENV PYTHONUNBUFFERED=1 \
     HF_HOME=/models/hf \
