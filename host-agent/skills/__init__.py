@@ -19,6 +19,7 @@ from . import (  # noqa: E402,F401
     media,
     music,
     network,
+    news,
     projects,
     shell,
     system,

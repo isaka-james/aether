@@ -33,7 +33,7 @@ def test_db_writes_are_noops_not_errors():
                                   status="done", ok=True, summary="ok")) is None
     assert run(db.add_favorite("music", "Song")) is False
     assert run(db.set_preference("volume", 30)) is False
-    assert run(db.remove_favorite("Song")) == 0
+    assert run(db.remove_favorite("Song")) == ""
     assert run(db.record_play("music", "Song")) is None
     assert run(db.archive_notifications([{"ts": 1.0, "summary": "x"}])) == 0
 

@@ -16,6 +16,7 @@ core assistant keeps working. Never let persistence take the app down.
 """
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 from typing import Any
@@ -222,21 +223,56 @@ async def add_favorite(kind: str, label: str, value: str | None = None) -> bool:
         return False
 
 
-async def remove_favorite(label: str, kind: str | None = None) -> int:
-    if _pool is None:
-        return 0
+def _best_favorite(favs: list[dict], label: str) -> dict | None:
+    """Closest saved favourite to a (possibly imperfect, speech-to-text) label: exact match
+    first, then a substring either way, then a difflib fuzzy match tolerant of small errors —
+    so 'blinding light' still resolves to a saved 'Blinding Lights'. Returns the row or None."""
+    low = (label or "").strip().lower()
+    if not low or not favs:
+        return None
+    by_low = {f["label"].lower(): f for f in favs}
+    if low in by_low:
+        return by_low[low]
+    subs = [f for f in favs if low in f["label"].lower() or f["label"].lower() in low]
+    if subs:
+        return min(subs, key=lambda f: len(f["label"]))
+    close = difflib.get_close_matches(low, list(by_low), n=1, cutoff=0.7)
+    return by_low[close[0]] if close else None
+
+
+async def find_favorite(label: str, kind: str | None = None) -> dict | None:
+    """Resolve a spoken label to a saved favourite (fuzzy). Returns the row dict, or None."""
+    if _pool is None or not (label or "").strip():
+        return None
     try:
         async with _pool.acquire() as c:
             if kind:
-                res = await c.execute("DELETE FROM favorites WHERE kind=$1 AND label ILIKE $2",
-                                      kind.lower(), label)
+                rows = await c.fetch("SELECT kind, label, value FROM favorites WHERE kind=$1",
+                                     kind.lower())
             else:
-                res = await c.execute("DELETE FROM favorites WHERE label ILIKE $1", label)
-        # res like "DELETE <n>"
-        return int(res.split()[-1]) if res else 0
+                rows = await c.fetch("SELECT kind, label, value FROM favorites")
+    except Exception as e:  # noqa: BLE001
+        log.warning("find_favorite failed: %s", e)
+        return None
+    favs = [{"kind": r["kind"], "label": r["label"], "value": r["value"]} for r in rows]
+    return _best_favorite(favs, label)
+
+
+async def remove_favorite(label: str, kind: str | None = None) -> str:
+    """Remove a favourite by (fuzzy) label. Returns the actual label removed, or '' if none."""
+    if _pool is None:
+        return ""
+    match = await find_favorite(label, kind)
+    if not match:
+        return ""
+    try:
+        async with _pool.acquire() as c:
+            await c.execute("DELETE FROM favorites WHERE kind=$1 AND label=$2",
+                            match["kind"], match["label"])
+        return match["label"]
     except Exception as e:  # noqa: BLE001
         log.warning("remove_favorite failed: %s", e)
-        return 0
+        return ""
 
 
 async def list_favorites(kind: str | None = None, limit: int = 25) -> list[dict]:
