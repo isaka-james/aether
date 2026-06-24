@@ -17,7 +17,9 @@ for playback on the host (via the host agent) and for the browser.
 import io
 import logging
 import re
+import threading
 import unicodedata
+from collections import OrderedDict
 
 import numpy as np
 import soundfile as sf
@@ -26,6 +28,35 @@ from .config import get_settings
 
 log = logging.getLogger("aether.tts")
 _kokoro = None
+_model_lock = threading.Lock()
+
+# A small LRU of finished audio. Aether repeats a lot of stock lines — confirmations
+# ("Very good, sir."), the recovery apologies, short acknowledgements — and Kokoro synthesis is
+# CPU-heavy (tens to hundreds of ms a line). Memoizing the rendered WAV for an identical
+# (speakable text, voice, speed, lang) turns a repeat into an instant dict lookup. Bounded so
+# memory stays flat; lock-guarded because synthesize() now runs in a worker thread (see
+# orchestrator._render) and several calls may overlap.
+_CACHE_MAX = 64
+_cache: "OrderedDict[tuple, bytes]" = OrderedDict()
+_cache_lock = threading.Lock()
+
+
+def _cache_get(key: tuple) -> bytes | None:
+    with _cache_lock:
+        wav = _cache.get(key)
+        if wav is not None:
+            _cache.move_to_end(key)
+        return wav
+
+
+def _cache_put(key: tuple, wav: bytes) -> None:
+    if not wav:  # never memoize a failed render — a transient miss shouldn't stick
+        return
+    with _cache_lock:
+        _cache[key] = wav
+        _cache.move_to_end(key)
+        while len(_cache) > _CACHE_MAX:
+            _cache.popitem(last=False)
 
 # Keep each synthesis chunk well under Kokoro's ~510-phoneme limit. Characters are a
 # rough proxy for phonemes, so we stay conservative to leave headroom.
@@ -110,10 +141,14 @@ def _ascii_fallback(text: str) -> str:
 def _get_kokoro():
     global _kokoro
     if _kokoro is None:
-        from kokoro_onnx import Kokoro  # imported lazily; heavy
-        s = get_settings()
-        log.info("Loading Kokoro TTS (voice=%s)...", s.kokoro_voice)
-        _kokoro = Kokoro(s.kokoro_onnx_path, s.kokoro_voices_path)
+        # Double-checked lock: synthesize() now runs in worker threads, so guard the one-time
+        # (heavy) model load against a first-call race that would build the model twice.
+        with _model_lock:
+            if _kokoro is None:
+                from kokoro_onnx import Kokoro  # imported lazily; heavy
+                s = get_settings()
+                log.info("Loading Kokoro TTS (voice=%s)...", s.kokoro_voice)
+                _kokoro = Kokoro(s.kokoro_onnx_path, s.kokoro_voices_path)
     return _kokoro
 
 
@@ -183,6 +218,11 @@ def synthesize(text: str) -> bytes:
         log.warning("TTS: input collapsed to empty after sanitisation (raw len=%d).", raw_len)
         return b""
     s = get_settings()
+    key = (text, s.kokoro_voice, s.kokoro_speed, s.kokoro_lang)
+    cached = _cache_get(key)
+    if cached is not None:
+        log.info("TTS: served %d byte(s) from cache.", len(cached))
+        return cached
     kokoro = _get_kokoro()
 
     chunks = _chunk(text)
@@ -208,5 +248,6 @@ def synthesize(text: str) -> bytes:
     buf = io.BytesIO()
     sf.write(buf, np.concatenate(parts), sample_rate, format="WAV", subtype="PCM_16")
     wav = buf.getvalue()
+    _cache_put(key, wav)
     log.info("TTS: produced %d byte(s) of audio.", len(wav))
     return wav

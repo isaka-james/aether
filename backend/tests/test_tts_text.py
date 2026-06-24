@@ -2,6 +2,9 @@
 safe for the phonemizer without losing meaning. The actual Kokoro synthesis is heavy and
 loaded lazily, so it isn't exercised here; only the sanitisers are.
 """
+import numpy as np
+
+from app import tts
 from app.tts import MAX_CHUNK_CHARS, _ascii_fallback, _chunk, _speakable
 
 
@@ -56,3 +59,38 @@ def test_chunk_splits_long_text_within_budget():
     # No content is dropped: every sentence's number still appears somewhere.
     joined = " ".join(chunks)
     assert "number 0." in joined and "number 79." in joined
+
+
+class _FakeKokoro:
+    """Stands in for the heavy ONNX model so synthesize() can be exercised without loading it.
+    Counts how often the model is actually invoked, to prove the cache short-circuits repeats."""
+    def __init__(self):
+        self.calls = 0
+
+    def create(self, text, voice, speed, lang):
+        self.calls += 1
+        return np.zeros(2400, dtype=np.float32), 24000
+
+
+def test_synthesize_memoizes_repeated_text(monkeypatch):
+    fake = _FakeKokoro()
+    monkeypatch.setattr(tts, "_get_kokoro", lambda: fake)
+    with tts._cache_lock:
+        tts._cache.clear()
+
+    first = tts.synthesize("Very good, sir.")
+    second = tts.synthesize("Very good, sir.")
+
+    assert first and first == second
+    assert fake.calls == 1  # second call served from cache, model not re-run
+
+
+def test_synthesize_does_not_cache_empty_input(monkeypatch):
+    fake = _FakeKokoro()
+    monkeypatch.setattr(tts, "_get_kokoro", lambda: fake)
+    with tts._cache_lock:
+        tts._cache.clear()
+
+    assert tts.synthesize("   ") == b""          # collapses to empty before any render
+    assert fake.calls == 0
+    assert len(tts._cache) == 0                   # nothing was memoized

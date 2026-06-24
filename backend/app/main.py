@@ -12,7 +12,7 @@ from fastapi import (Depends, FastAPI, File, HTTPException, UploadFile,
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import cache, db, llm, notifications, orchestrator, stt
+from . import cache, db, host_client, llm, notifications, orchestrator, stt
 from .auth import create_token, decode_token, require_user, verify_credentials
 from .config import get_settings
 from .models import (ApproveCommand, CommandResult, LoginRequest, TextCommand,
@@ -43,6 +43,7 @@ async def lifespan(app: FastAPI):
         await asyncio.gather(*tasks, return_exceptions=True)
         await cache.close()
         await db.close()
+        await host_client.close()
 
 
 app = FastAPI(title="Aether", version="1.0.0", lifespan=lifespan)

@@ -14,6 +14,7 @@ Safety:
 
 An optional on_progress(step, label) async callback drives the web client's phase UI.
 """
+import asyncio
 import json
 import logging
 import re
@@ -424,6 +425,13 @@ async def speak(summary: str, *, transcript: str | None = None, status: str = "e
                                        summary=summary, detail=detail), on_progress)
 
 
+async def _render(text: str) -> bytes:
+    """Synthesize speech off the event loop. Kokoro runs CPU-heavy ONNX inference that would
+    otherwise freeze every other request — a second command, a live notification — for the whole
+    time Aether is talking. We hand it to a worker thread, exactly as STT is offloaded in main.py."""
+    return await asyncio.to_thread(tts.synthesize, text)
+
+
 async def _speak(text: str) -> bool:
     """Synthesize and play `text` on the host. tts.synthesize already drops or ASCII-fixes
     chunks it can't voice, so a non-empty reply almost always yields some audio. If even
@@ -433,7 +441,7 @@ async def _speak(text: str) -> bool:
     (the user may be on voice with no UI in view) or that the agent 'can't pronounce' it."""
     log.info("speak: attempting (len=%d, preview=%r).", len(text or ""), (text or "")[:80])
     try:
-        if await host_client.play_audio(tts.synthesize(text)):
+        if await host_client.play_audio(await _render(text)):
             log.info("speak: primary path played successfully.")
             return True
         log.warning("speak: primary path yielded no audio; retrying with stripped version.")
@@ -443,14 +451,14 @@ async def _speak(text: str) -> bool:
     # Second pass: strip the SAME reply down to plain ASCII so the user still hears it.
     try:
         stripped = tts._ascii_fallback(tts._speakable(text or ""))
-        if stripped and await host_client.play_audio(tts.synthesize(stripped)):
+        if stripped and await host_client.play_audio(await _render(stripped)):
             return True
     except Exception as e:  # noqa: BLE001
         log.warning("TTS stripped retry failed: %s", e)
 
     # Last resort: a short, in-character recovery line. Don't blame the content.
     try:
-        return await host_client.play_audio(tts.synthesize(
+        return await host_client.play_audio(await _render(
             "Forgive me, sir — my voice is briefly out of order. Do try again in a moment."))
     except Exception as e:  # noqa: BLE001
         log.warning("TTS final fallback also failed: %s", e)
