@@ -169,6 +169,14 @@ SKILLS: list[Skill] = [
                      "'will it rain', 'do I need a jacket', and as part of a morning briefing.",
           '{} (their location)  OR  {"location": "Nairobi"}', INFO,
           ("what's the weather", "will it rain today", "do I need a jacket")),
+    Skill("news", "Top trending news headlines right now — overall top stories by default, "
+                  "a topic section (world, business, technology, science, health, sports, "
+                  "entertainment, nation), or a free-text search. Use for 'what's in the news', "
+                  "'any tech news', 'what's happening in the world', 'latest on <X>'.",
+          '{} (top stories)  OR  {"topic": "world|business|technology|science|health|sports|entertainment"}'
+          '  OR  {"query": "text"}  (+ optional "limit": 1-10)', INFO,
+          ("what's in the news", "any tech news today", "what's happening in the world",
+           "latest headlines on the election")),
     Skill("notifications", "Read recent desktop notifications the agent has captured live "
                            "from the session bus (app, summary, body), plus Do Not Disturb "
                            "status. Use for 'what notifications do I have', 'did I miss anything', "
