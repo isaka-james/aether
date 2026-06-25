@@ -42,6 +42,11 @@ function setReply(t, kind = "") {
   const r = $("reply");
   r.textContent = t;
   r.classList.toggle("flash-error", kind === "error");
+  // A long answer switches to a compact, left-aligned, scrollable style so a wall of text stays
+  // readable and doesn't shove the orb off-screen; keep the newest line in view while streaming.
+  const long = kind !== "error" && (t || "").length > 240;
+  r.classList.toggle("long", long);
+  if (long) r.scrollTop = r.scrollHeight;
 }
 function flashError(summary, detail) {
   // Detailed, silent flash for failures the host intentionally won't voice. Both summary
@@ -184,6 +189,7 @@ function renderResult(res) {
       b.addEventListener("click", () => submitChoice(opt));
       box.appendChild(b);
     });
+    $("choice-text").value = "";   // fresh free-text box each time we ask
     $("choice").classList.remove("hidden");
     setMode("idle");
     return;
@@ -285,6 +291,10 @@ $("mic-dismiss").addEventListener("click", () => $("mic-sheet").classList.add("h
 $("approve-yes").addEventListener("click", () => { $("approve").classList.add("hidden"); if (state.pending) submitApprove(state.pending); state.pending = null; });
 $("approve-no").addEventListener("click", () => { $("approve").classList.add("hidden"); state.pending = null; setReply("Cancelled."); });
 $("choice-cancel").addEventListener("click", () => { $("choice").classList.add("hidden"); state.choice = null; setReply("Okay, never mind."); });
+// Let the user answer a choice in their own words instead of only the offered options.
+function submitChoiceCustom() { const t = ($("choice-text").value || "").trim(); if (!t) return; $("choice-text").value = ""; submitChoice(t); }
+$("choice-send").addEventListener("click", submitChoiceCustom);
+$("choice-text").addEventListener("keydown", (e) => { if (e.key === "Enter") submitChoiceCustom(); });
 $("send").addEventListener("click", () => { const t = $("text").value; $("text").value = ""; submitText(t); });
 $("text").addEventListener("keydown", (e) => { if (e.key === "Enter") { const t = $("text").value; $("text").value = ""; submitText(t); } });
 // Suggestion chips: clicking one sends it (event delegation, so dynamically-loaded chips work).
