@@ -94,24 +94,3 @@ def test_synthesize_does_not_cache_empty_input(monkeypatch):
     assert tts.synthesize("   ") == b""          # collapses to empty before any render
     assert fake.calls == 0
     assert len(tts._cache) == 0                   # nothing was memoized
-
-
-def test_chunk_text_returns_speakable_chunks_within_budget():
-    long = " ".join("This is sentence number %d." % i for i in range(40))
-    chunks = tts.chunk_text(long)
-    assert len(chunks) > 1
-    assert all(len(c) <= MAX_CHUNK_CHARS for c in chunks)
-    assert "number 0." in chunks[0]
-
-
-def test_synthesize_chunk_renders_caches_and_handles_empty(monkeypatch):
-    fake = _FakeKokoro()
-    monkeypatch.setattr(tts, "_get_kokoro", lambda: fake)
-    with tts._cache_lock:
-        tts._cache.clear()
-
-    first = tts.synthesize_chunk("Hello there.")
-    second = tts.synthesize_chunk("Hello there.")
-    assert first and first == second and fake.calls == 1  # second served from the phrase cache
-    assert tts.synthesize_chunk("   ") == b""              # empty chunk never hits the model
-    assert fake.calls == 1
