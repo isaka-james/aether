@@ -12,7 +12,7 @@ from fastapi import (Depends, FastAPI, File, HTTPException, UploadFile,
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import cache, db, host_client, llm, notifications, orchestrator, stt
+from . import cache, db, host_client, llm, notifications, orchestrator, stt, timers
 from .auth import create_token, decode_token, require_user, verify_credentials
 from .config import get_settings
 from .models import (ApproveCommand, CommandResult, LoginRequest, TextCommand,
@@ -31,6 +31,8 @@ async def lifespan(app: FastAPI):
     # Bring up the optional persistence layer; both degrade gracefully if unreachable.
     await db.connect()
     await cache.connect()
+    # Timers fan out to web clients through the same hub host notifications use.
+    timers.set_broadcaster(hub.broadcast)
     tasks = [
         asyncio.create_task(notifications.poll_loop(hub.broadcast)),
         asyncio.create_task(notifications.subscriber(hub.broadcast)),
@@ -41,6 +43,7 @@ async def lifespan(app: FastAPI):
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        await timers.cancel_all()
         await cache.close()
         await db.close()
         await host_client.close()

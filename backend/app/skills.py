@@ -194,6 +194,19 @@ SKILLS: list[Skill] = [
           "none", INFO, ("clear my notifications",)),
     Skill("notify", "Show a desktop notification.", '{"message": "text"}', INFO,
           ("remind me on screen to stretch",)),
+    Skill("set_timer", "Set a countdown timer or a reminder. When it elapses Aether announces it "
+                       "aloud, as a desktop notification, and in the web app. Give the duration as "
+                       "minutes/seconds/hours; add a 'label' to make it a reminder of something. "
+                       "Use for 'set a timer for 5 minutes', 'remind me to call mum in an hour'.",
+          '{"minutes": 5}  OR  {"label": "take the pasta out", "minutes": 8}  '
+          '(fields: seconds/minutes/hours)', INFO,
+          ("set a timer for 10 minutes", "remind me to stretch in half an hour",
+           "ping me in 90 seconds")),
+    Skill("list_timers", "List the timers and reminders currently running, with time left on each.",
+          "none", INFO, ("what timers do I have", "how long left on my timer")),
+    Skill("cancel_timer", "Cancel a running timer/reminder by its label (or cancel them all).",
+          '{"label": "name"}  (omit to cancel all)', INFO,
+          ("cancel my timer", "stop the pasta reminder")),
 
     # --- Memory: favourites & preferences (persisted; lets Aether recall what the user likes) ---
     Skill("list_favorites", "List the user's saved favourites (songs/videos/etc.). Call this to "

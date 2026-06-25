@@ -10,7 +10,7 @@ import json
 import logging
 from typing import Awaitable, Callable, Optional
 
-from .. import cache, db, host_client
+from .. import cache, db, host_client, timers
 from ..skills import SKILL_NAMES
 
 log = logging.getLogger("aether.agent.tools")
@@ -23,7 +23,8 @@ OBS_LIMIT = 4000  # generous enough that a long multi-item observation isn't cho
 # Tools answered inside the backend (data layer), not dispatched to the host agent. Checked
 # before SKILL_NAMES so they don't get routed to the host even though they're in the catalog.
 _BACKEND_TOOLS = {"list_favorites", "remember_favorite", "forget_favorite",
-                  "get_preference", "set_preference", "play_history"}
+                  "get_preference", "set_preference", "play_history",
+                  "set_timer", "list_timers", "cancel_timer"}
 
 # Read-only lookups whose result is safe to reuse for a short while: a repeat within the TTL is
 # served from the Redis cache (a transparent no-op when Redis is off) instead of re-hitting the
@@ -131,6 +132,37 @@ async def _backend_tool(tool: str, params: dict) -> dict:
                     "data": {"top_plays": []}}
         names = ", ".join(f'{t["label"]} ({t["count"]})' for t in top if t["label"])
         return {"ok": True, "summary": f"Most played: {names}.", "data": {"top_plays": top}}
+
+    if tool == "set_timer":
+        label = str(params.get("label") or params.get("message") or params.get("name") or "").strip()
+        seconds = timers.duration_seconds(params)
+        if seconds <= 0:
+            return {"ok": False, "summary": "How long should it run? Tell me the minutes or seconds."}
+        if seconds > timers.MAX_SECONDS:
+            return {"ok": False, "summary": "That's longer than I can hold a timer for (24 hours max)."}
+        timers.schedule(label, seconds)
+        human = timers.humanize(seconds)
+        summary = f"I'll remind you to {label} in {human}." if label else f"Timer set for {human}."
+        return {"ok": True, "summary": summary, "data": {"label": label, "seconds": seconds}}
+
+    if tool == "list_timers":
+        active = timers.list_active()
+        if not active:
+            return {"ok": True, "summary": "No timers or reminders are running.", "data": {"timers": []}}
+        parts = [f"{t['label']} ({timers.humanize(t['remaining_seconds'])} left)" if t["label"]
+                 else f"{timers.humanize(t['remaining_seconds'])} left" for t in active]
+        return {"ok": True, "summary": "Running: " + "; ".join(parts) + ".", "data": {"timers": active}}
+
+    if tool == "cancel_timer":
+        selector = str(params.get("label") or params.get("id") or params.get("name") or "").strip() or None
+        cancelled = timers.cancel(selector)
+        if not cancelled:
+            return {"ok": False, "summary": "I didn't find a matching timer to cancel.",
+                    "data": {"cancelled": []}}
+        n = len(cancelled)
+        summary = ("Cancelled all timers." if selector is None
+                   else f"Cancelled {n} timer{'s' if n != 1 else ''}.")
+        return {"ok": True, "summary": summary, "data": {"cancelled": cancelled}}
 
     return {"ok": False, "summary": f"unknown backend tool '{tool}'"}
 
