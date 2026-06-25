@@ -427,27 +427,51 @@ async def speak(summary: str, *, transcript: str | None = None, status: str = "e
 
 
 async def _render(text: str) -> bytes:
-    """Synthesize speech off the event loop. Kokoro runs CPU-heavy ONNX inference that would
-    otherwise freeze every other request — a second command, a live notification — for the whole
-    time Aether is talking. We hand it to a worker thread, exactly as STT is offloaded in main.py."""
+    """Synthesize the whole reply off the event loop. Kokoro runs CPU-heavy ONNX inference that
+    would otherwise freeze every other request — a second command, a live notification — for the
+    whole time Aether is talking. We hand it to a worker thread, as STT is offloaded in main.py.
+    Used by the fallback paths; the primary path streams per sentence (see _stream_chunks)."""
     return await asyncio.to_thread(tts.synthesize, text)
 
 
+async def _stream_chunks(chunks: list[str]) -> bool:
+    """Speak sentence by sentence: play each chunk while the NEXT one is already synthesising, so
+    the user hears the first sentence after ~one sentence's synth time instead of waiting for the
+    whole reply to render. Playback stays strictly sequential — each /play is awaited before the
+    next, and the host plays synchronously, so chunks never overlap. A chunk that fails to
+    synthesise is skipped (partial speech beats dead air). Returns True if any chunk played."""
+    played = False
+    wav = await asyncio.to_thread(tts.synthesize_chunk, chunks[0])
+    for i in range(len(chunks)):
+        nxt = (asyncio.create_task(asyncio.to_thread(tts.synthesize_chunk, chunks[i + 1]))
+               if i + 1 < len(chunks) else None)
+        if wav:
+            try:
+                if await host_client.play_audio(wav):
+                    played = True
+            except Exception as e:  # noqa: BLE001
+                log.warning("speak: chunk %d playback raised: %s", i, e)
+        wav = (await nxt) if nxt is not None else b""
+    return played
+
+
 async def _speak(text: str) -> bool:
-    """Synthesize and play `text` on the host. tts.synthesize already drops or ASCII-fixes
-    chunks it can't voice, so a non-empty reply almost always yields some audio. If even
-    that came back empty, try a second pass on a hand-stripped version of the SAME answer
-    so the user still hears the real reply, slightly degraded; only as a last resort speak
-    a short in-character recovery line — and NEVER one that claims the answer is 'on screen'
-    (the user may be on voice with no UI in view) or that the agent 'can't pronounce' it."""
+    """Synthesize and play `text` on the host, streaming it sentence by sentence so the reply
+    starts almost immediately. tts already drops or ASCII-fixes chunks it can't voice, so a
+    non-empty reply almost always yields some audio. If streaming came back empty, try a second
+    pass on a hand-stripped version of the SAME answer so the user still hears the real reply,
+    slightly degraded; only as a last resort speak a short in-character recovery line — and NEVER
+    one that claims the answer is 'on screen' (the user may be on voice with no UI in view) or
+    that the agent 'can't pronounce' it."""
     log.info("speak: attempting (len=%d, preview=%r).", len(text or ""), (text or "")[:80])
     try:
-        if await host_client.play_audio(await _render(text)):
-            log.info("speak: primary path played successfully.")
+        chunks = await asyncio.to_thread(tts.chunk_text, text)
+        if chunks and await _stream_chunks(chunks):
+            log.info("speak: streamed %d chunk(s) successfully.", len(chunks))
             return True
-        log.warning("speak: primary path yielded no audio; retrying with stripped version.")
+        log.warning("speak: streaming yielded no audio; retrying with stripped version.")
     except Exception as e:  # noqa: BLE001
-        log.warning("speak: primary path raised (%s); retrying with stripped version.", e)
+        log.warning("speak: streaming raised (%s); retrying with stripped version.", e)
 
     # Second pass: strip the SAME reply down to plain ASCII so the user still hears it.
     try:

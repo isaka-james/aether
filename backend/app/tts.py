@@ -251,3 +251,32 @@ def synthesize(text: str) -> bytes:
     _cache_put(key, wav)
     log.info("TTS: produced %d byte(s) of audio.", len(wav))
     return wav
+
+
+def chunk_text(text: str) -> list[str]:
+    """The speakable sentence-chunks of `text`, for the streaming speak path — the same splitting
+    synthesize() does internally, exposed so the caller can synthesise and play one chunk at a
+    time. A short reply yields a single chunk (so streaming is a no-op there)."""
+    return _chunk(_speakable(text or ""))
+
+
+def synthesize_chunk(chunk: str) -> bytes:
+    """Render ONE already-speakable chunk to WAV bytes (b'' if it can't be voiced). Lets the
+    streaming path start playback on the first sentence while the rest is still synthesising.
+    Same per-phrase cache and ASCII-fallback robustness as synthesize()."""
+    chunk = (chunk or "").strip()
+    if not chunk:
+        return b""
+    s = get_settings()
+    key = (chunk, s.kokoro_voice, s.kokoro_speed, s.kokoro_lang)
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+    samples, sr = _render_chunk(_get_kokoro(), chunk, s.kokoro_voice, s.kokoro_speed, s.kokoro_lang)
+    if samples is None:
+        return b""
+    buf = io.BytesIO()
+    sf.write(buf, samples, sr, format="WAV", subtype="PCM_16")
+    wav = buf.getvalue()
+    _cache_put(key, wav)
+    return wav
