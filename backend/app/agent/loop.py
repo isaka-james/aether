@@ -138,6 +138,22 @@ class _FinalStreamer:
 async def handle(text: str, *, transcript: str | None = None,
                  clarify: "Clarification | None" = None, session: str | None = None,
                  on_progress: Progress = None, on_answer: "Answer" = None) -> CommandResult:
+    """Public entry point. The agent's own per-step recovery handles the common failures inside
+    the loop; this outer guard turns ANY unexpected crash into a calm error result (silent on the
+    host, flashed on the web) rather than letting it 500 the request — Aether degrades, never dies."""
+    try:
+        return await _handle(text, transcript=transcript, clarify=clarify, session=session,
+                             on_progress=on_progress, on_answer=on_answer)
+    except Exception as e:  # noqa: BLE001
+        log.exception("orchestrator.handle crashed; returning a graceful error")
+        return CommandResult(ok=False, status="error", transcript=transcript,
+                             summary="I'm afraid something went amiss there, sir.",
+                             detail=f"{type(e).__name__}: {e}")
+
+
+async def _handle(text: str, *, transcript: str | None = None,
+                  clarify: "Clarification | None" = None, session: str | None = None,
+                  on_progress: Progress = None, on_answer: "Answer" = None) -> CommandResult:
     text = (text or "").strip()
     if not text:
         return CommandResult(ok=False, status="error",
@@ -436,7 +452,19 @@ async def _conclude(state: AgentState, transcript: str | None, draft: str, messa
 
 async def execute_approved(skill: str, params: dict[str, Any], *, transcript: str | None = None,
                            on_progress: Progress = None) -> CommandResult:
-    """Run an action the user approved in the UI (e.g. a sudo command), one-shot."""
+    """Run an action the user approved in the UI (e.g. a sudo command), one-shot. Guarded so an
+    unexpected failure becomes a graceful error result instead of a 500."""
+    try:
+        return await _execute_approved(skill, params, transcript=transcript, on_progress=on_progress)
+    except Exception as e:  # noqa: BLE001
+        log.exception("execute_approved crashed; returning a graceful error")
+        return CommandResult(ok=False, status="error", transcript=transcript, skill=skill,
+                             summary="I'm afraid that approved action didn't go through, sir.",
+                             detail=f"{type(e).__name__}: {e}")
+
+
+async def _execute_approved(skill: str, params: dict[str, Any], *, transcript: str | None = None,
+                            on_progress: Progress = None) -> CommandResult:
     action = Action(skill=skill, params=params or {})
     exec_params = dict(action.params)
     command = str(action.params.get("command", "")).strip()
