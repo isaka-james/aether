@@ -177,6 +177,14 @@ SKILLS: list[Skill] = [
           '  OR  {"query": "text"}  (+ optional "limit": 1-10)', INFO,
           ("what's in the news", "any tech news today", "what's happening in the world",
            "latest headlines on the election")),
+    Skill("web_search", "Search the web (keyless, via DuckDuckGo) for current facts and look-ups "
+                        "the news and weather skills don't cover — definitions, people, places, "
+                        "recent events, prices, scores, 'how/what/who is…'. Returns result "
+                        "snippets to answer from; rely only on what comes back, and prefer the "
+                        "dedicated news/weather skills when the question is squarely theirs.",
+          '{"query": "text"}  (+ optional "limit": 1-8)', INFO,
+          ("look that up online", "search the web for the fastest land animal",
+           "who is the prime minister of Japan", "what's the score of the match")),
     Skill("notifications", "Read recent desktop notifications the agent has captured live "
                            "from the session bus (app, summary, body), plus Do Not Disturb "
                            "status. Use for 'what notifications do I have', 'did I miss anything', "

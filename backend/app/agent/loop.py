@@ -49,6 +49,7 @@ READ_ONLY_TOOLS = frozenset({
     "list_input_devices", "now_playing", "youtube_status", "weather", "notifications",
     "system_info", "get_brightness", "bluetooth_status", "wifi_status", "capabilities",
     "find_tool", "find_files", "play_history", "list_favorites", "get_preference",
+    "web_search",
 })
 
 # Statuses that represent the agent talking — a finished answer (done), a question

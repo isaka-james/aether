@@ -30,7 +30,7 @@ _BACKEND_TOOLS = {"list_favorites", "remember_favorite", "forget_favorite",
 # network. Keep the TTL short so answers stay fresh — weather/news shift over a day but not over
 # minutes. Deliberately excludes real-time reads (system_info: battery/CPU) and anything that
 # changes state. Seconds.
-_CACHEABLE_TTL = {"weather": 600, "news": 600}
+_CACHEABLE_TTL = {"weather": 600, "news": 600, "web_search": 300}
 
 
 def _cache_key(tool: str, params: dict) -> str:
