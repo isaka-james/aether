@@ -247,6 +247,12 @@ function connectWs() {
       const sp = m.step === "speaking";
       orbWrap().classList.toggle("speaking", sp);
       setPhase(m.label, true);
+    } else if (m.type === "answer" && state.mode === "busy") {
+      // The agent's final answer, streamed live as it's generated. "reset" starts each reasoning
+      // step (so only the final step's text remains); "delta" appends. The HTTP response then
+      // sets the authoritative reply, so a hiccup here self-corrects.
+      if (m.op === "reset") { state.stream = ""; setReply("…"); }
+      else if (m.op === "delta") { state.stream = (state.stream || "") + m.text; setReply(state.stream); }
     } else if (m.type === "task_done" && document.hidden && Notification.permission === "granted") {
       new Notification("Aether", { body: m.summary });
     } else if (m.type === "notification" && Notification.permission === "granted") {

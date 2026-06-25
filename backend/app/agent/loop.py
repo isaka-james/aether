@@ -18,7 +18,7 @@ import asyncio
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Awaitable, Callable, Optional
 
 from .. import cache, db, host_client, llm, tts
 from ..config import get_settings
@@ -74,9 +74,70 @@ def _should_speak(result: "CommandResult") -> bool:
     return True
 
 
+# Live answer streaming to the web. on_answer(op, text): "reset" at the start of each step,
+# "delta" for each newly-revealed slice of the final answer as the model generates it.
+Answer = Optional[Callable[[str, str], Awaitable[None]]]
+_FINAL_KEY = re.compile(r'"final"\s*:\s*"')
+
+
+async def _answer(on_answer: "Answer", op: str, text: str = "") -> None:
+    """Push a live-answer event to web clients. Best-effort — a failure here never touches the
+    actual result the request returns."""
+    if on_answer is not None:
+        try:
+            await on_answer(op, text)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+class _FinalStreamer:
+    """Pulls the growing value of the top-level ``"final"`` string out of the JSON the model
+    streams, emitting only the newly-revealed characters each feed. Returns "" until the key
+    appears (so a tool-call step streams nothing to the user), decodes \\-escapes, and stops at
+    the closing quote. One instance per step."""
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._emitted = ""
+
+    def feed(self, delta: str) -> str:
+        self._buf += delta
+        m = _FINAL_KEY.search(self._buf)
+        if not m:
+            return ""
+        value: list[str] = []
+        s, i = self._buf, m.end()
+        while i < len(s):
+            c = s[i]
+            if c == "\\":
+                if i + 1 >= len(s):
+                    break                      # dangling escape — wait for the next delta
+                nxt = s[i + 1]
+                if nxt == "u":
+                    if i + 6 > len(s):
+                        break                  # partial \uXXXX — wait
+                    try:
+                        value.append(chr(int(s[i + 2:i + 6], 16)))
+                    except ValueError:
+                        value.append(nxt)
+                    i += 6
+                    continue
+                value.append({"n": "\n", "t": "\t", "r": "\r"}.get(nxt, nxt))
+                i += 2
+                continue
+            if c == '"':
+                break                          # closing quote — value complete
+            value.append(c)
+            i += 1
+        full = "".join(value)
+        new = full[len(self._emitted):]
+        self._emitted = full
+        return new
+
+
 async def handle(text: str, *, transcript: str | None = None,
                  clarify: "Clarification | None" = None, session: str | None = None,
-                 on_progress: Progress = None) -> CommandResult:
+                 on_progress: Progress = None, on_answer: "Answer" = None) -> CommandResult:
     text = (text or "").strip()
     if not text:
         return CommandResult(ok=False, status="error",
@@ -126,7 +187,8 @@ async def handle(text: str, *, transcript: str | None = None,
     trace: dict = {"skill": None}
     state = AgentState(goal=(intent.goal if intent else text),
                        success_criteria=(intent.success_criteria if intent else []))
-    result = await _loop(messages, transcript, on_progress, trace=trace, state=state)
+    result = await _loop(messages, transcript, on_progress, trace=trace, state=state,
+                         on_answer=on_answer)
     if result.skill is None:
         result.skill = trace["skill"]
     # Never-silent guarantee for SUCCESSFUL replies only. Errors/blocks are deliberately
@@ -148,7 +210,8 @@ async def handle(text: str, *, transcript: str | None = None,
 
 
 async def _loop(messages: list[dict], transcript: str | None, on_progress: Progress,
-                *, trace: dict | None = None, state: "AgentState | None" = None) -> CommandResult:
+                *, trace: dict | None = None, state: "AgentState | None" = None,
+                on_answer: "Answer" = None) -> CommandResult:
     """The coordinator: discover/plan → execute → verify → stop. `state` carries the working
     memory (goal, success criteria, what's been done, repeated-call guard) across turns."""
     s = get_settings()
@@ -157,8 +220,19 @@ async def _loop(messages: list[dict], transcript: str | None, on_progress: Progr
     for step in range(MAX_STEPS):
         state.step = step
         await _emit(on_progress, "thinking", "Thinking…" if step == 0 else "Reasoning about the result…")
+        # Stream this step's answer to the web: reset, then feed each token through a fresh
+        # extractor that surfaces only the final-answer text (tool-call steps reveal nothing).
+        await _answer(on_answer, "reset")
+        streamer = _FinalStreamer()
+
+        async def _tok(delta: str, _s: "_FinalStreamer" = streamer) -> None:
+            piece = _s.feed(delta)
+            if piece:
+                await _answer(on_answer, "delta", piece)
+
         try:
-            content = await llm.complete(messages, json_mode=True)
+            content = await llm.complete(messages, json_mode=True,
+                                         on_token=_tok if on_answer else None)
         except Exception as e:  # noqa: BLE001
             log.warning("agent step failed: %s", e)
             state.stop_reason = StopReason.LLM_ERROR

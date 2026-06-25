@@ -18,10 +18,16 @@ plus ``review_result()`` for phrasing the outcome of a one-shot approved command
 import json
 import logging
 from dataclasses import dataclass
+from typing import Awaitable, Callable, Optional
 
 from .config import Settings, get_settings
 
 log = logging.getLogger("aether.llm")
+
+# Optional per-token callback for streaming. When passed to complete(), the response is streamed
+# and this is awaited with each text delta (used to push the answer to the web live). Failures in
+# it are swallowed — streaming is a UX nicety, never allowed to break the actual completion.
+TokenCb = Optional[Callable[[str], Awaitable[None]]]
 
 # The spoken voice of Aether — shared by every place that phrases something the user hears
 # (the agent's final answers, its clarifying questions, and the post-command review). The
@@ -122,34 +128,54 @@ def _anthropic_client(api_key: str, timeout: float):
 
 async def complete(messages: list[dict], *, json_mode: bool = False,
                    max_tokens: int | None = None, temperature: float | None = None,
-                   retries: int = 1) -> str:
+                   retries: int = 1, on_token: TokenCb = None) -> str:
     """Run one reasoning step and return the assistant's text content.
 
     ``messages`` is OpenAI-shaped: a list of ``{"role": "system|user|assistant",
     "content": str}``. For Anthropic the leading system message(s) are lifted into
     the native ``system`` field automatically. ``retries`` is retained for call-site
-    compatibility; transient errors are handled by each SDK's own backoff."""
+    compatibility; transient errors are handled by each SDK's own backoff. When ``on_token``
+    is given the response is streamed and the callback is awaited with each text delta — the
+    full content is still returned, so callers are otherwise unaffected."""
     s = get_settings()
     provider, model, base_url, api_key = _resolve(s)
     temp = s.llm_temperature if temperature is None else temperature
     cap = max_tokens or s.llm_max_tokens
 
     if provider.style == "anthropic":
-        return await _complete_anthropic(api_key, model, messages, cap, s.llm_timeout)
+        return await _complete_anthropic(api_key, model, messages, cap, s.llm_timeout, on_token)
     return await _complete_openai(base_url, api_key, model, messages, json_mode, cap, temp,
-                                  s.llm_timeout)
+                                  s.llm_timeout, on_token)
+
+
+async def _emit_token(on_token: TokenCb, delta: str) -> None:
+    if delta and on_token is not None:
+        try:
+            await on_token(delta)
+        except Exception:  # noqa: BLE001 - a streaming-UI hiccup must not break the completion
+            pass
 
 
 async def _complete_openai(base_url: str, api_key: str, model: str, messages: list[dict],
                            json_mode: bool, max_tokens: int, temperature: float,
-                           timeout: float) -> str:
+                           timeout: float, on_token: TokenCb = None) -> str:
     client = _openai_client(base_url, api_key, timeout)
     kwargs: dict = {"model": model, "messages": messages, "temperature": temperature,
                     "max_tokens": max_tokens}
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
-    resp = await client.chat.completions.create(**kwargs)
-    return resp.choices[0].message.content or ""
+    if on_token is None:
+        resp = await client.chat.completions.create(**kwargs)
+        return resp.choices[0].message.content or ""
+    parts: list[str] = []
+    stream = await client.chat.completions.create(**kwargs, stream=True)
+    async for chunk in stream:
+        choices = getattr(chunk, "choices", None)
+        delta = (choices[0].delta.content if choices else None) or ""
+        if delta:
+            parts.append(delta)
+            await _emit_token(on_token, delta)
+    return "".join(parts)
 
 
 def _anthropic_system(messages: list[dict]) -> list[dict] | None:
@@ -170,7 +196,7 @@ def _anthropic_system(messages: list[dict]) -> list[dict] | None:
 
 
 async def _complete_anthropic(api_key: str, model: str, messages: list[dict],
-                              max_tokens: int, timeout: float) -> str:
+                              max_tokens: int, timeout: float, on_token: TokenCb = None) -> str:
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY is not set")
     client = _anthropic_client(api_key, timeout)
@@ -192,9 +218,17 @@ async def _complete_anthropic(api_key: str, model: str, messages: list[dict],
     # No temperature / thinking config: Opus-class models reject sampling params, and the
     # system prompt already constrains the reply to a single JSON object (so adaptive
     # thinking, which would add latency here, is unnecessary for this fast decision loop).
-    resp = await client.messages.create(model=model, max_tokens=max_tokens,
-                                        system=system, messages=convo)
-    return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+    if on_token is None:
+        resp = await client.messages.create(model=model, max_tokens=max_tokens,
+                                            system=system, messages=convo)
+        return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+    parts: list[str] = []
+    async with client.messages.stream(model=model, max_tokens=max_tokens,
+                                      system=system, messages=convo) as stream:
+        async for text in stream.text_stream:
+            parts.append(text)
+            await _emit_token(on_token, text)
+    return "".join(parts)
 
 
 REVIEW_SYSTEM = (

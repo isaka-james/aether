@@ -97,6 +97,12 @@ async def _progress(step: str, label: str) -> None:
     await hub.broadcast({"type": "progress", "step": step, "label": label})
 
 
+async def _answer(op: str, text: str) -> None:
+    """Stream the agent's final answer to web clients as it's generated.
+    op is 'reset' (clear, at the start of each reasoning step) or 'delta' (append text)."""
+    await hub.broadcast({"type": "answer", "op": op, "text": text})
+
+
 # --- Auth ---------------------------------------------------------------------
 @app.post("/api/login", response_model=TokenResponse)
 async def login(body: LoginRequest):
@@ -110,7 +116,7 @@ async def login(body: LoginRequest):
 async def command_text(body: TextCommand, user: str = Depends(require_user)):
     await _progress("received", "Received by Aether")
     result = await orchestrator.handle(body.text, transcript=body.text, clarify=body.clarify,
-                                       session=user, on_progress=_progress)
+                                       session=user, on_progress=_progress, on_answer=_answer)
     await _notify(result)
     return result
 
@@ -161,7 +167,7 @@ async def command_voice(
         return result
 
     result = await orchestrator.handle(transcript, transcript=transcript,
-                                       session=user, on_progress=_progress)
+                                       session=user, on_progress=_progress, on_answer=_answer)
     await _notify(result)
     return result
 
