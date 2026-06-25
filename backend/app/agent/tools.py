@@ -5,12 +5,11 @@ helpers `_emit` (progress) and `_parse` (lenient JSON). Deliberately imports not
 rest of the agent package, so both the coordinator loop and the sub-agent loop can dispatch a
 tool identically without an import cycle.
 """
-import hashlib
 import json
 import logging
 from typing import Awaitable, Callable, Optional
 
-from .. import cache, db, host_client, timers
+from .. import db, host_client, timers
 from ..skills import SKILL_NAMES
 
 log = logging.getLogger("aether.agent.tools")
@@ -25,20 +24,6 @@ OBS_LIMIT = 4000  # generous enough that a long multi-item observation isn't cho
 _BACKEND_TOOLS = {"list_favorites", "remember_favorite", "forget_favorite",
                   "get_preference", "set_preference", "play_history",
                   "set_timer", "list_timers", "cancel_timer"}
-
-# Read-only lookups whose result is safe to reuse for a short while: a repeat within the TTL is
-# served from the Redis cache (a transparent no-op when Redis is off) instead of re-hitting the
-# network. Keep the TTL short so answers stay fresh — weather/news shift over a day but not over
-# minutes. Deliberately excludes real-time reads (system_info: battery/CPU) and anything that
-# changes state. Seconds.
-_CACHEABLE_TTL = {"weather": 600, "news": 600, "web_search": 300}
-
-
-def _cache_key(tool: str, params: dict) -> str:
-    """A stable key for a (tool, params) lookup — params order/whitespace-independent."""
-    blob = json.dumps(params or {}, sort_keys=True, default=str)
-    return f"tool:{tool}:{hashlib.sha1(blob.encode('utf-8')).hexdigest()}"
-
 
 async def _emit(on_progress: Progress, step: str, label: str) -> None:
     if on_progress:
@@ -172,16 +157,6 @@ async def _run_and_observe(tool: str, params: dict, on_progress: Progress, *, la
     and return its result dict, logging any media play. Shared by the coordinator and sub-agents so
     both dispatch identically. Callers are responsible for run_command safety classification."""
     prefix = f"{label}: " if label else ""
-    ttl = _CACHEABLE_TTL.get(tool)
-    key = _cache_key(tool, params) if ttl else None
-    if key:
-        hit = await cache.cache_get(key)
-        if isinstance(hit, dict):
-            await _emit(on_progress, "executing", f"{prefix}Recalling that…")
-            if not isinstance(hit.get("data"), dict):
-                hit["data"] = {}
-            hit["data"]["cached"] = True
-            return hit
     try:
         if tool in _BACKEND_TOOLS:
             await _emit(on_progress, "executing", f"{prefix}Looking that up ({tool})…")
@@ -196,9 +171,6 @@ async def _run_and_observe(tool: str, params: dict, on_progress: Progress, *, la
         log.exception("tool %s raised", tool)
         result = {"ok": False, "summary": f"The {tool} step hit an unexpected error.",
                   "data": {"error": str(e)}}
-    # Memoize successful read-only lookups so an identical repeat within the TTL is instant.
-    if key and isinstance(result, dict) and result.get("ok"):
-        await cache.cache_set(key, result, ttl)
     # Learn from what actually gets played, so favourites can be recalled/inferred later.
     if tool in ("play_youtube", "play_music") and result.get("ok"):
         plabel = str(params.get("query")
