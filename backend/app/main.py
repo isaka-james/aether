@@ -12,7 +12,7 @@ from fastapi import (Depends, FastAPI, File, HTTPException, UploadFile,
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import cache, db, llm, notifications, orchestrator, stt
+from . import cache, db, host_client, llm, notifications, orchestrator, stt, timers
 from .auth import create_token, decode_token, require_user, verify_credentials
 from .config import get_settings
 from .models import (ApproveCommand, CommandResult, LoginRequest, TextCommand,
@@ -31,6 +31,8 @@ async def lifespan(app: FastAPI):
     # Bring up the optional persistence layer; both degrade gracefully if unreachable.
     await db.connect()
     await cache.connect()
+    # Timers fan out to web clients through the same hub host notifications use.
+    timers.set_broadcaster(hub.broadcast)
     tasks = [
         asyncio.create_task(notifications.poll_loop(hub.broadcast)),
         asyncio.create_task(notifications.subscriber(hub.broadcast)),
@@ -41,8 +43,10 @@ async def lifespan(app: FastAPI):
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        await timers.cancel_all()
         await cache.close()
         await db.close()
+        await host_client.close()
 
 
 app = FastAPI(title="Aether", version="1.0.0", lifespan=lifespan)
@@ -93,6 +97,12 @@ async def _progress(step: str, label: str) -> None:
     await hub.broadcast({"type": "progress", "step": step, "label": label})
 
 
+async def _answer(op: str, text: str) -> None:
+    """Stream the agent's final answer to web clients as it's generated.
+    op is 'reset' (clear, at the start of each reasoning step) or 'delta' (append text)."""
+    await hub.broadcast({"type": "answer", "op": op, "text": text})
+
+
 # --- Auth ---------------------------------------------------------------------
 @app.post("/api/login", response_model=TokenResponse)
 async def login(body: LoginRequest):
@@ -106,7 +116,7 @@ async def login(body: LoginRequest):
 async def command_text(body: TextCommand, user: str = Depends(require_user)):
     await _progress("received", "Received by Aether")
     result = await orchestrator.handle(body.text, transcript=body.text, clarify=body.clarify,
-                                       session=user, on_progress=_progress)
+                                       session=user, on_progress=_progress, on_answer=_answer)
     await _notify(result)
     return result
 
@@ -157,7 +167,7 @@ async def command_voice(
         return result
 
     result = await orchestrator.handle(transcript, transcript=transcript,
-                                       session=user, on_progress=_progress)
+                                       session=user, on_progress=_progress, on_answer=_answer)
     await _notify(result)
     return result
 

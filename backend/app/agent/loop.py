@@ -14,10 +14,11 @@ Safety:
 
 An optional on_progress(step, label) async callback drives the web client's phase UI.
 """
+import asyncio
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Awaitable, Callable, Optional
 
 from .. import cache, db, host_client, llm, tts
 from ..config import get_settings
@@ -48,6 +49,7 @@ READ_ONLY_TOOLS = frozenset({
     "list_input_devices", "now_playing", "youtube_status", "weather", "notifications",
     "system_info", "get_brightness", "bluetooth_status", "wifi_status", "capabilities",
     "find_tool", "find_files", "play_history", "list_favorites", "get_preference",
+    "web_search", "list_timers",
 })
 
 # Statuses that represent the agent talking — a finished answer (done), a question
@@ -72,9 +74,86 @@ def _should_speak(result: "CommandResult") -> bool:
     return True
 
 
+# Live answer streaming to the web. on_answer(op, text): "reset" at the start of each step,
+# "delta" for each newly-revealed slice of the final answer as the model generates it.
+Answer = Optional[Callable[[str, str], Awaitable[None]]]
+_FINAL_KEY = re.compile(r'"final"\s*:\s*"')
+
+
+async def _answer(on_answer: "Answer", op: str, text: str = "") -> None:
+    """Push a live-answer event to web clients. Best-effort — a failure here never touches the
+    actual result the request returns."""
+    if on_answer is not None:
+        try:
+            await on_answer(op, text)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+class _FinalStreamer:
+    """Pulls the growing value of the top-level ``"final"`` string out of the JSON the model
+    streams, emitting only the newly-revealed characters each feed. Returns "" until the key
+    appears (so a tool-call step streams nothing to the user), decodes \\-escapes, and stops at
+    the closing quote. One instance per step."""
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._emitted = ""
+
+    def feed(self, delta: str) -> str:
+        self._buf += delta
+        m = _FINAL_KEY.search(self._buf)
+        if not m:
+            return ""
+        value: list[str] = []
+        s, i = self._buf, m.end()
+        while i < len(s):
+            c = s[i]
+            if c == "\\":
+                if i + 1 >= len(s):
+                    break                      # dangling escape — wait for the next delta
+                nxt = s[i + 1]
+                if nxt == "u":
+                    if i + 6 > len(s):
+                        break                  # partial \uXXXX — wait
+                    try:
+                        value.append(chr(int(s[i + 2:i + 6], 16)))
+                    except ValueError:
+                        value.append(nxt)
+                    i += 6
+                    continue
+                value.append({"n": "\n", "t": "\t", "r": "\r"}.get(nxt, nxt))
+                i += 2
+                continue
+            if c == '"':
+                break                          # closing quote — value complete
+            value.append(c)
+            i += 1
+        full = "".join(value)
+        new = full[len(self._emitted):]
+        self._emitted = full
+        return new
+
+
 async def handle(text: str, *, transcript: str | None = None,
                  clarify: "Clarification | None" = None, session: str | None = None,
-                 on_progress: Progress = None) -> CommandResult:
+                 on_progress: Progress = None, on_answer: "Answer" = None) -> CommandResult:
+    """Public entry point. The agent's own per-step recovery handles the common failures inside
+    the loop; this outer guard turns ANY unexpected crash into a calm error result (silent on the
+    host, flashed on the web) rather than letting it 500 the request — Aether degrades, never dies."""
+    try:
+        return await _handle(text, transcript=transcript, clarify=clarify, session=session,
+                             on_progress=on_progress, on_answer=on_answer)
+    except Exception as e:  # noqa: BLE001
+        log.exception("orchestrator.handle crashed; returning a graceful error")
+        return CommandResult(ok=False, status="error", transcript=transcript,
+                             summary="I'm afraid something went amiss there, sir.",
+                             detail=f"{type(e).__name__}: {e}")
+
+
+async def _handle(text: str, *, transcript: str | None = None,
+                  clarify: "Clarification | None" = None, session: str | None = None,
+                  on_progress: Progress = None, on_answer: "Answer" = None) -> CommandResult:
     text = (text or "").strip()
     if not text:
         return CommandResult(ok=False, status="error",
@@ -124,7 +203,8 @@ async def handle(text: str, *, transcript: str | None = None,
     trace: dict = {"skill": None}
     state = AgentState(goal=(intent.goal if intent else text),
                        success_criteria=(intent.success_criteria if intent else []))
-    result = await _loop(messages, transcript, on_progress, trace=trace, state=state)
+    result = await _loop(messages, transcript, on_progress, trace=trace, state=state,
+                         on_answer=on_answer)
     if result.skill is None:
         result.skill = trace["skill"]
     # Never-silent guarantee for SUCCESSFUL replies only. Errors/blocks are deliberately
@@ -146,7 +226,8 @@ async def handle(text: str, *, transcript: str | None = None,
 
 
 async def _loop(messages: list[dict], transcript: str | None, on_progress: Progress,
-                *, trace: dict | None = None, state: "AgentState | None" = None) -> CommandResult:
+                *, trace: dict | None = None, state: "AgentState | None" = None,
+                on_answer: "Answer" = None) -> CommandResult:
     """The coordinator: discover/plan → execute → verify → stop. `state` carries the working
     memory (goal, success criteria, what's been done, repeated-call guard) across turns."""
     s = get_settings()
@@ -155,8 +236,19 @@ async def _loop(messages: list[dict], transcript: str | None, on_progress: Progr
     for step in range(MAX_STEPS):
         state.step = step
         await _emit(on_progress, "thinking", "Thinking…" if step == 0 else "Reasoning about the result…")
+        # Stream this step's answer to the web: reset, then feed each token through a fresh
+        # extractor that surfaces only the final-answer text (tool-call steps reveal nothing).
+        await _answer(on_answer, "reset")
+        streamer = _FinalStreamer()
+
+        async def _tok(delta: str, _s: "_FinalStreamer" = streamer) -> None:
+            piece = _s.feed(delta)
+            if piece:
+                await _answer(on_answer, "delta", piece)
+
         try:
-            content = await llm.complete(messages, json_mode=True)
+            content = await llm.complete(messages, json_mode=True,
+                                         on_token=_tok if on_answer else None)
         except Exception as e:  # noqa: BLE001
             log.warning("agent step failed: %s", e)
             state.stop_reason = StopReason.LLM_ERROR
@@ -360,7 +452,19 @@ async def _conclude(state: AgentState, transcript: str | None, draft: str, messa
 
 async def execute_approved(skill: str, params: dict[str, Any], *, transcript: str | None = None,
                            on_progress: Progress = None) -> CommandResult:
-    """Run an action the user approved in the UI (e.g. a sudo command), one-shot."""
+    """Run an action the user approved in the UI (e.g. a sudo command), one-shot. Guarded so an
+    unexpected failure becomes a graceful error result instead of a 500."""
+    try:
+        return await _execute_approved(skill, params, transcript=transcript, on_progress=on_progress)
+    except Exception as e:  # noqa: BLE001
+        log.exception("execute_approved crashed; returning a graceful error")
+        return CommandResult(ok=False, status="error", transcript=transcript, skill=skill,
+                             summary="I'm afraid that approved action didn't go through, sir.",
+                             detail=f"{type(e).__name__}: {e}")
+
+
+async def _execute_approved(skill: str, params: dict[str, Any], *, transcript: str | None = None,
+                            on_progress: Progress = None) -> CommandResult:
     action = Action(skill=skill, params=params or {})
     exec_params = dict(action.params)
     command = str(action.params.get("command", "")).strip()
@@ -424,33 +528,64 @@ async def speak(summary: str, *, transcript: str | None = None, status: str = "e
                                        summary=summary, detail=detail), on_progress)
 
 
+async def _render(text: str) -> bytes:
+    """Synthesize the whole reply off the event loop. Kokoro runs CPU-heavy ONNX inference that
+    would otherwise freeze every other request — a second command, a live notification — for the
+    whole time Aether is talking. We hand it to a worker thread, as STT is offloaded in main.py.
+    Used by the fallback paths; the primary path streams per sentence (see _stream_chunks)."""
+    return await asyncio.to_thread(tts.synthesize, text)
+
+
+async def _stream_chunks(chunks: list[str]) -> bool:
+    """Speak sentence by sentence: play each chunk while the NEXT one is already synthesising, so
+    the user hears the first sentence after ~one sentence's synth time instead of waiting for the
+    whole reply to render. Playback stays strictly sequential — each /play is awaited before the
+    next, and the host plays synchronously, so chunks never overlap. A chunk that fails to
+    synthesise is skipped (partial speech beats dead air). Returns True if any chunk played."""
+    played = False
+    wav = await asyncio.to_thread(tts.synthesize_chunk, chunks[0])
+    for i in range(len(chunks)):
+        nxt = (asyncio.create_task(asyncio.to_thread(tts.synthesize_chunk, chunks[i + 1]))
+               if i + 1 < len(chunks) else None)
+        if wav:
+            try:
+                if await host_client.play_audio(wav):
+                    played = True
+            except Exception as e:  # noqa: BLE001
+                log.warning("speak: chunk %d playback raised: %s", i, e)
+        wav = (await nxt) if nxt is not None else b""
+    return played
+
+
 async def _speak(text: str) -> bool:
-    """Synthesize and play `text` on the host. tts.synthesize already drops or ASCII-fixes
-    chunks it can't voice, so a non-empty reply almost always yields some audio. If even
-    that came back empty, try a second pass on a hand-stripped version of the SAME answer
-    so the user still hears the real reply, slightly degraded; only as a last resort speak
-    a short in-character recovery line — and NEVER one that claims the answer is 'on screen'
-    (the user may be on voice with no UI in view) or that the agent 'can't pronounce' it."""
+    """Synthesize and play `text` on the host, streaming it sentence by sentence so the reply
+    starts almost immediately. tts already drops or ASCII-fixes chunks it can't voice, so a
+    non-empty reply almost always yields some audio. If streaming came back empty, try a second
+    pass on a hand-stripped version of the SAME answer so the user still hears the real reply,
+    slightly degraded; only as a last resort speak a short in-character recovery line — and NEVER
+    one that claims the answer is 'on screen' (the user may be on voice with no UI in view) or
+    that the agent 'can't pronounce' it."""
     log.info("speak: attempting (len=%d, preview=%r).", len(text or ""), (text or "")[:80])
     try:
-        if await host_client.play_audio(tts.synthesize(text)):
-            log.info("speak: primary path played successfully.")
+        chunks = await asyncio.to_thread(tts.chunk_text, text)
+        if chunks and await _stream_chunks(chunks):
+            log.info("speak: streamed %d chunk(s) successfully.", len(chunks))
             return True
-        log.warning("speak: primary path yielded no audio; retrying with stripped version.")
+        log.warning("speak: streaming yielded no audio; retrying with stripped version.")
     except Exception as e:  # noqa: BLE001
-        log.warning("speak: primary path raised (%s); retrying with stripped version.", e)
+        log.warning("speak: streaming raised (%s); retrying with stripped version.", e)
 
     # Second pass: strip the SAME reply down to plain ASCII so the user still hears it.
     try:
         stripped = tts._ascii_fallback(tts._speakable(text or ""))
-        if stripped and await host_client.play_audio(tts.synthesize(stripped)):
+        if stripped and await host_client.play_audio(await _render(stripped)):
             return True
     except Exception as e:  # noqa: BLE001
         log.warning("TTS stripped retry failed: %s", e)
 
     # Last resort: a short, in-character recovery line. Don't blame the content.
     try:
-        return await host_client.play_audio(tts.synthesize(
+        return await host_client.play_audio(await _render(
             "Forgive me, sir — my voice is briefly out of order. Do try again in a moment."))
     except Exception as e:  # noqa: BLE001
         log.warning("TTS final fallback also failed: %s", e)

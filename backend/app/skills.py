@@ -177,6 +177,14 @@ SKILLS: list[Skill] = [
           '  OR  {"query": "text"}  (+ optional "limit": 1-10)', INFO,
           ("what's in the news", "any tech news today", "what's happening in the world",
            "latest headlines on the election")),
+    Skill("web_search", "Search the web (keyless, via DuckDuckGo) for current facts and look-ups "
+                        "the news and weather skills don't cover — definitions, people, places, "
+                        "recent events, prices, scores, 'how/what/who is…'. Returns result "
+                        "snippets to answer from; rely only on what comes back, and prefer the "
+                        "dedicated news/weather skills when the question is squarely theirs.",
+          '{"query": "text"}  (+ optional "limit": 1-8)', INFO,
+          ("look that up online", "search the web for the fastest land animal",
+           "who is the prime minister of Japan", "what's the score of the match")),
     Skill("notifications", "Read recent desktop notifications the agent has captured live "
                            "from the session bus (app, summary, body), plus Do Not Disturb "
                            "status. Use for 'what notifications do I have', 'did I miss anything', "
@@ -186,6 +194,19 @@ SKILLS: list[Skill] = [
           "none", INFO, ("clear my notifications",)),
     Skill("notify", "Show a desktop notification.", '{"message": "text"}', INFO,
           ("remind me on screen to stretch",)),
+    Skill("set_timer", "Set a countdown timer or a reminder. When it elapses Aether announces it "
+                       "aloud, as a desktop notification, and in the web app. Give the duration as "
+                       "minutes/seconds/hours; add a 'label' to make it a reminder of something. "
+                       "Use for 'set a timer for 5 minutes', 'remind me to call mum in an hour'.",
+          '{"minutes": 5}  OR  {"label": "take the pasta out", "minutes": 8}  '
+          '(fields: seconds/minutes/hours)', INFO,
+          ("set a timer for 10 minutes", "remind me to stretch in half an hour",
+           "ping me in 90 seconds")),
+    Skill("list_timers", "List the timers and reminders currently running, with time left on each.",
+          "none", INFO, ("what timers do I have", "how long left on my timer")),
+    Skill("cancel_timer", "Cancel a running timer/reminder by its label (or cancel them all).",
+          '{"label": "name"}  (omit to cancel all)', INFO,
+          ("cancel my timer", "stop the pasta reminder")),
 
     # --- Memory: favourites & preferences (persisted; lets Aether recall what the user likes) ---
     Skill("list_favorites", "List the user's saved favourites (songs/videos/etc.). Call this to "

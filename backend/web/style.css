@@ -23,7 +23,7 @@ body {
 .hidden { display: none !important; }
 .sub { color: var(--muted); margin: 0; font-size: 14.5px; line-height: 1.5; }
 .error { color: var(--err); min-height: 1.1em; margin: 2px 0 0; font-size: 13.5px; }
-.screen { position: relative; z-index: 1; height: 100vh; display: flex; flex-direction: column; }
+.screen { position: relative; z-index: 1; height: 100vh; height: 100dvh; display: flex; flex-direction: column; }
 .center { align-items: center; justify-content: center; }
 .spacer { flex: 1; }
 
@@ -58,7 +58,7 @@ button:active { transform: scale(.96); }
 .field input:focus { border-color: var(--a1); box-shadow: 0 0 0 4px rgba(110,168,254,.16); }
 
 /* ── App shell ── */
-.topbar { display: flex; align-items: center; gap: 6px; padding: 14px 16px; }
+.topbar { display: flex; align-items: center; gap: 6px; padding: 14px 16px; padding-top: calc(14px + env(safe-area-inset-top)); flex: none; }
 .brand { font-weight: 700; font-size: 16px; display: flex; align-items: center; gap: 8px; }
 .brand-mark { background: linear-gradient(135deg, var(--a1), var(--a2)); -webkit-background-clip: text; background-clip: text; color: transparent; font-size: 18px; }
 .status-pill { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); padding: 5px 11px; border-radius: 999px; border: 1px solid var(--stroke); background: rgba(255,255,255,.04); }
@@ -67,9 +67,20 @@ button:active { transform: scale(.96); }
 .status-pill.live em { color: var(--a3); }
 .status-pill em { font-style: normal; }
 
-.stage { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 26px; padding: 10px 18px; text-align: center; }
+/* flex:1 + min-height:0 + overflow lets a long reply or a stack of recents scroll inside the
+   stage instead of pushing the composer off-screen; `safe center` keeps the orb centred when
+   content fits but falls back to top-aligned (so nothing is clipped) once it overflows. */
+.stage { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  display: flex; flex-direction: column; align-items: center; justify-content: safe center;
+  gap: 26px; padding: 16px 18px; text-align: center; }
 .reply { max-width: 660px; margin: 0; font-size: clamp(19px, 3.4vw, 27px); font-weight: 500; line-height: 1.4; min-height: 1.4em;
-  background: linear-gradient(180deg, #fff, #c9d4ee); -webkit-background-clip: text; background-clip: text; color: transparent; transition: opacity .25s; white-space: pre-wrap; }
+  background: linear-gradient(180deg, #fff, #c9d4ee); -webkit-background-clip: text; background-clip: text; color: transparent; transition: opacity .25s; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Long answers: compact, left-aligned, capped height with its own scroll, so a wall of text stays
+   readable and the orb stays reachable. setReply() adds .long when the reply gets big (and never
+   for errors, which have their own flash style). */
+.reply.long { font-size: clamp(14.5px, 2.2vw, 17px); font-weight: 450; line-height: 1.6;
+  text-align: left; max-width: 680px; max-height: 40vh; overflow-y: auto;
+  -webkit-overflow-scrolling: touch; padding: 2px; }
 /* Error flash: silent, calm, readable. Errors live here (and in history) — not on speakers. */
 .reply.flash-error {
   -webkit-text-fill-color: initial; background: none;
@@ -128,7 +139,12 @@ button:active { transform: scale(.96); }
 .chip:hover { border-color: var(--a1); color: var(--ink); background: rgba(110,168,254,.08); }
 
 /* ── Composer ── */
-.composer { display: flex; align-items: center; gap: 8px; margin: 0 auto 16px; padding: 7px 8px 7px 18px; border-radius: 999px; width: min(640px, 92vw); }
+/* flex:none keeps the composer at its natural height and always on screen; the bottom margin
+   clears the home indicator, and interactive-widget=resizes-content (see index.html) shrinks
+   the viewport when the keyboard opens so this stays above it. */
+.composer { flex: none; display: flex; align-items: center; gap: 8px; margin: 0 auto 16px;
+  margin-bottom: calc(16px + env(safe-area-inset-bottom)); padding: 7px 8px 7px 18px;
+  border-radius: 999px; width: min(640px, 92vw); }
 .composer input { flex: 1; background: transparent; border: none; outline: none; color: var(--ink); font-size: 15px; padding: 8px 0; }
 .composer input::placeholder { color: var(--muted); }
 .send-btn { background: linear-gradient(135deg, var(--a1), var(--a2)); color: #060810; width: 40px; height: 40px; border-radius: 50%; font-size: 15px; }
@@ -157,13 +173,20 @@ button:active { transform: scale(.96); }
 .choice-options { display: flex; flex-direction: column; gap: 10px; margin-top: 18px; }
 .choice-opt { width: 100%; text-align: center; }
 .choice-opt:hover { border-color: var(--accent, #6ea8ff); }
+/* Free-text alternative to the offered options — answer in your own words. */
+.choice-custom { display: flex; gap: 8px; margin-top: 12px; }
+.choice-custom input { flex: 1; min-width: 0; background: rgba(0,0,0,.28); border: 1px solid var(--stroke);
+  color: var(--ink); padding: 12px 14px; border-radius: 12px; font-size: 14.5px; outline: none;
+  transition: border-color .2s, box-shadow .2s; }
+.choice-custom input:focus { border-color: var(--a1); box-shadow: 0 0 0 4px rgba(110,168,254,.16); }
+.choice-custom .btn-primary { flex: none; padding: 12px 18px; }
 
 /* ── History drawer ── */
-.drawer { position: fixed; top: 0; right: 0; height: 100vh; width: min(390px, 90vw); z-index: 35; border-radius: 0; border-left: 1px solid var(--stroke); display: flex; flex-direction: column; animation: slide .26s cubic-bezier(.2,.8,.2,1); }
+.drawer { position: fixed; top: 0; right: 0; height: 100vh; height: 100dvh; width: min(390px, 90vw); z-index: 35; border-radius: 0; border-left: 1px solid var(--stroke); display: flex; flex-direction: column; animation: slide .26s cubic-bezier(.2,.8,.2,1); }
 @keyframes slide { from { transform: translateX(30px); opacity: .4 } to { transform: translateX(0); opacity: 1 } }
 .drawer-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px; border-bottom: 1px solid var(--stroke); font-weight: 700; }
 .drawer-body { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 11px; }
-.h-item { border: 1px solid var(--stroke); border-radius: 14px; padding: 12px 14px; background: rgba(255,255,255,.03); }
+.h-item { border: 1px solid var(--stroke); border-radius: 14px; padding: 12px 14px; background: rgba(255,255,255,.03); overflow-wrap: anywhere; }
 .h-item .h-user { color: var(--a1); font-size: 13px; font-weight: 600; }
 .h-item .h-bot { margin-top: 5px; font-size: 14px; line-height: 1.45; }
 .h-item .h-meta { margin-top: 7px; font-size: 11px; color: var(--muted); }

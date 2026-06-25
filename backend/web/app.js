@@ -42,6 +42,11 @@ function setReply(t, kind = "") {
   const r = $("reply");
   r.textContent = t;
   r.classList.toggle("flash-error", kind === "error");
+  // A long answer switches to a compact, left-aligned, scrollable style so a wall of text stays
+  // readable and doesn't shove the orb off-screen; keep the newest line in view while streaming.
+  const long = kind !== "error" && (t || "").length > 240;
+  r.classList.toggle("long", long);
+  if (long) r.scrollTop = r.scrollHeight;
 }
 function flashError(summary, detail) {
   // Detailed, silent flash for failures the host intentionally won't voice. Both summary
@@ -184,6 +189,7 @@ function renderResult(res) {
       b.addEventListener("click", () => submitChoice(opt));
       box.appendChild(b);
     });
+    $("choice-text").value = "";   // fresh free-text box each time we ask
     $("choice").classList.remove("hidden");
     setMode("idle");
     return;
@@ -247,6 +253,12 @@ function connectWs() {
       const sp = m.step === "speaking";
       orbWrap().classList.toggle("speaking", sp);
       setPhase(m.label, true);
+    } else if (m.type === "answer" && state.mode === "busy") {
+      // The agent's final answer, streamed live as it's generated. "reset" starts each reasoning
+      // step (so only the final step's text remains); "delta" appends. The HTTP response then
+      // sets the authoritative reply, so a hiccup here self-corrects.
+      if (m.op === "reset") { state.stream = ""; setReply("…"); }
+      else if (m.op === "delta") { state.stream = (state.stream || "") + m.text; setReply(state.stream); }
     } else if (m.type === "task_done" && document.hidden && Notification.permission === "granted") {
       new Notification("Aether", { body: m.summary });
     } else if (m.type === "notification" && Notification.permission === "granted") {
@@ -279,6 +291,10 @@ $("mic-dismiss").addEventListener("click", () => $("mic-sheet").classList.add("h
 $("approve-yes").addEventListener("click", () => { $("approve").classList.add("hidden"); if (state.pending) submitApprove(state.pending); state.pending = null; });
 $("approve-no").addEventListener("click", () => { $("approve").classList.add("hidden"); state.pending = null; setReply("Cancelled."); });
 $("choice-cancel").addEventListener("click", () => { $("choice").classList.add("hidden"); state.choice = null; setReply("Okay, never mind."); });
+// Let the user answer a choice in their own words instead of only the offered options.
+function submitChoiceCustom() { const t = ($("choice-text").value || "").trim(); if (!t) return; $("choice-text").value = ""; submitChoice(t); }
+$("choice-send").addEventListener("click", submitChoiceCustom);
+$("choice-text").addEventListener("keydown", (e) => { if (e.key === "Enter") submitChoiceCustom(); });
 $("send").addEventListener("click", () => { const t = $("text").value; $("text").value = ""; submitText(t); });
 $("text").addEventListener("keydown", (e) => { if (e.key === "Enter") { const t = $("text").value; $("text").value = ""; submitText(t); } });
 // Suggestion chips: clicking one sends it (event delegation, so dynamically-loaded chips work).

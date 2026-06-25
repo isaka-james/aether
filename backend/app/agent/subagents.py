@@ -45,7 +45,7 @@ _ROLES: dict[str, tuple[str, list[str]]] = {
         "You gather information about the machine and the world and answer questions, using "
         "read-only tools: weather, notifications, the user's files, installed tools, system "
         "state, the clipboard and the camera. You report; you don't change settings.",
-        ["weather", "notifications", "clear_notifications", "notify",
+        ["weather", "news", "web_search", "notifications", "clear_notifications", "notify",
          "find_files", "find_tool", "capabilities", "system_info",
          "clipboard", "camera", "open_url", "run_command"],
     ),
