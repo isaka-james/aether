@@ -71,8 +71,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == "/play":
             wav = self._read_body()
-            ok = audio.play_wav(wav)
-            log.info("play %d bytes -> %s", len(wav), ok)
+            # The backend streams a reply as several clips; the first carries X-Aether-Flush so a
+            # new reply supersedes any audio still queued/playing from a previous one.
+            flush = self.headers.get("X-Aether-Flush") == "1"
+            ok = audio.play_wav(wav, flush=flush)
+            log.info("play %d bytes (flush=%s) -> queued=%s", len(wav), flush, ok)
             return self._send(200, {"ok": ok})
 
         self._send(404, {"ok": False, "error": "not found"})

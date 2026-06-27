@@ -55,17 +55,19 @@ async def execute(skill: str, params: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "summary": "I couldn't reach the host agent.", "error": str(e)}
 
 
-async def play_audio(wav_bytes: bytes) -> bool:
-    """Stream WAV bytes to the host agent to play on the host speakers."""
+async def play_audio(wav_bytes: bytes, *, flush: bool = False) -> bool:
+    """Stream WAV bytes to the host agent to play on the host speakers. `flush` tells the host to
+    cancel any audio still queued/playing first — set on the first clip of a new reply so a fresh
+    answer supersedes a stale one. Returns True once the host has accepted the clip (it then plays
+    in order on the host's serialized player)."""
     if not wav_bytes:
         return False
     s = get_settings()
+    headers = {**_headers(), "Content-Type": "audio/wav"}
+    if flush:
+        headers["X-Aether-Flush"] = "1"
     try:
-        r = await _get_client().post(
-            f"{s.host_agent_url}/play",
-            content=wav_bytes,
-            headers={**_headers(), "Content-Type": "audio/wav"},
-        )
+        r = await _get_client().post(f"{s.host_agent_url}/play", content=wav_bytes, headers=headers)
         r.raise_for_status()
         return True
     except Exception as e:  # noqa: BLE001
