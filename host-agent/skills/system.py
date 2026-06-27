@@ -85,10 +85,10 @@ def power_profile(params):
 
 
 @skill("screenshot")
-def screenshot(_):
-    path = f"/tmp/aether-shot-{int(time.time())}.png"
-    # Use whichever screenshot tool is installed and actually writes the file. Covers KDE
-    # (spectacle), GNOME (gnome-screenshot), XFCE, wlroots/sway (grim), and plain X11.
+def _capture_screen(path: str) -> tuple[str, str]:
+    """Capture the full screen to `path`. Returns (tool_used, error); tool_used is "" on failure.
+    Uses whichever tool is installed and actually writes the file — KDE (spectacle), GNOME
+    (gnome-screenshot), XFCE, wlroots/sway (grim), and plain X11 (scrot/maim/ImageMagick)."""
     candidates = [
         ("spectacle", ["spectacle", "-f", "-b", "-n", "-o", path]),
         ("gnome-screenshot", ["gnome-screenshot", "-f", path]),
@@ -104,10 +104,45 @@ def screenshot(_):
             continue
         _, _, err = run(argv, timeout=15)
         if os.path.exists(path):
-            return ok("Screenshot captured.", path=path, tool=tool)
+            return tool, ""
         last = err or last
+    return "", last
+
+
+def screenshot(_):
+    path = f"/tmp/aether-shot-{int(time.time())}.png"
+    tool, err = _capture_screen(path)
+    if tool:
+        return ok("Screenshot captured.", path=path, tool=tool)
     return fail("Couldn't take a screenshot. Install one of: spectacle, gnome-screenshot, "
-                "grim, or scrot.", error=last)
+                "grim, or scrot.", error=err)
+
+
+@skill("read_screen")
+def read_screen(_):
+    """OCR the screen: capture it, then pull the visible text out with tesseract. Lets Aether
+    actually 'read' what's on screen — an error dialog, a webpage, a code snippet — to answer
+    about it. No args."""
+    if not has("tesseract"):
+        return fail("Reading the screen needs the 'tesseract' OCR tool, which isn't installed.")
+    path = f"/tmp/aether-ocr-{int(time.time())}.png"
+    tool, err = _capture_screen(path)
+    if not tool:
+        return fail("Couldn't capture the screen to read it.", error=err)
+    try:
+        rc, out, oerr = run(["tesseract", path, "stdout"], timeout=30)
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    text = " ".join((out or "").split())   # collapse OCR's ragged whitespace/newlines
+    if not text:
+        if rc != 0:
+            return fail("Couldn't read the screen text.", error=oerr)
+        return ok("There's no readable text on the screen right now.", text="")
+    clipped = text if len(text) <= 4000 else text[:4000] + "…"
+    return ok("Read the screen.", text=clipped, chars=len(text))
 
 
 @skill("lock_screen")
@@ -186,6 +221,37 @@ def _dnd_on() -> bool:
     _, out, _ = run(["kreadconfig6", "--file", "plasmanotifyrc",
                      "--group", "DoNotDisturb", "--key", "Until"])
     return bool(out.strip()) and out.strip() != "0"
+
+
+@skill("set_dnd")
+def set_dnd(params):
+    """Turn Do Not Disturb (notification silence) on or off. {"state": "on|off"}. On KDE this sets
+    plasmanotifyrc's DoNotDisturb window (far-future = on, cleared = off); on GNOME it toggles
+    notification banners. Verifies the new state where it can read it back."""
+    state = str(params.get("state", "")).strip().lower()
+    if state in ("on", "enable", "enabled", "true", "1", "silence", "quiet"):
+        want = True
+    elif state in ("off", "disable", "disabled", "false", "0"):
+        want = False
+    else:
+        return fail('Tell me whether to turn Do Not Disturb "on" or "off".')
+
+    applied = False
+    if has("kwriteconfig6"):   # KDE Plasma
+        until = "2999-01-01T00:00:00" if want else ""
+        run(["kwriteconfig6", "--file", "plasmanotifyrc", "--group", "DoNotDisturb",
+             "--key", "Until", until])
+        applied = True
+    if has("gsettings"):       # GNOME
+        run(["gsettings", "set", "org.gnome.desktop.notifications", "show-banners",
+             "false" if want else "true"])
+        applied = True
+    if not applied:
+        return fail("I couldn't find a way to change Do Not Disturb on this desktop.")
+    # Honest verification where we can read the state back (KDE).
+    if has("kreadconfig6") and _dnd_on() != want:
+        return fail(f"I tried to turn Do Not Disturb {'on' if want else 'off'}, but it didn't take.")
+    return ok(f"Do Not Disturb is {'on' if want else 'off'}.", do_not_disturb=want)
 
 
 @skill("notifications")
