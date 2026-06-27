@@ -29,12 +29,15 @@ class StopReason(str, Enum):
 class AgentState:
     goal: str = ""
     success_criteria: list[str] = field(default_factory=list)
+    plan: list[str] = field(default_factory=list)    # rough multi-step plan from the refine pass
+    requires_action: bool = False                    # does fulfilling this CHANGE machine state?
     phase: Phase = Phase.PLAN
     step: int = 0
     acted: bool = False                              # did a state-CHANGING tool succeed? gates verify
     last_calls: list[str] = field(default_factory=list)   # tool+params signatures, for loop-protection
     repeat_count: int = 0                            # consecutive identical calls
     verify_attempts: int = 0                         # how many times verification sent us back to fix
+    action_pushbacks: int = 0                        # times we refused a "done" with no action taken
     stop_reason: "StopReason | None" = None
 
     def record_call(self, signature: str) -> bool:

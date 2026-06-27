@@ -39,8 +39,12 @@ _SUDO = re.compile(r"\bsudo\b")
 # resolve a conflict, act, and verify — a smart multi-step chain shouldn't get truncated.
 MAX_STEPS = 9
 MAX_VERIFY = 2  # at most this many verify→fix rounds before we finish with an honest answer
+MAX_ACTION_PUSHBACKS = 2  # times we refuse a "done" that performed no action before accepting the reply
 # Voiced when the model returns nothing usable — better a graceful line than silence.
 FALLBACK_REPLY = "I'm afraid I've come up short on that one, sir."
+# Empty acknowledgements the model sometimes emits with NOTHING behind them. We refuse to let any
+# of these stand in as a finished task — the source of "it said done but did nothing".
+_HOLLOW = frozenset({"", "done", "ok", "okay", "sure", "alright", "got it", "right", "yes", "no"})
 
 # Tools that only READ state. A request that used only these (a pure question / investigation)
 # hasn't changed anything, so it skips the verify pass — there's nothing to re-check.
@@ -135,6 +139,92 @@ class _FinalStreamer:
         return new
 
 
+# Pulls complete sentences off a growing buffer for live speech, leaving any trailing partial
+# sentence until more text (or finish()) arrives. Greedy, so several finished sentences flush as one.
+_LIVE_SENTENCES = re.compile(r"^(.*[.!?\n])\s+(.*)$", re.S)
+
+
+def _live_speech_ok(state: "AgentState", s) -> bool:
+    """True when we may speak this step's answer AS IT STREAMS. Restricted to replies that will be
+    accepted unchanged — no required action and nothing acted-on yet — so neither the
+    anti-fabrication gate nor verify can revise what we've already voiced."""
+    return bool(s.speak_on_host and s.tts_stream and not state.requires_action and not state.acted)
+
+
+def _concludes(obj: "dict | None", content: str) -> bool:
+    """Whether this step's output is a final answer (vs. a tool call / choice) — used to decide
+    whether the live speaker should drain (it spoke the reply) or be cancelled (idle)."""
+    if isinstance(obj, dict):
+        return "final" in obj or obj.get("tool") in ("answer", "final", "reply", "respond")
+    answer = (content or "").strip()
+    return len(answer) >= 3 and answer.lower().strip(" .!") not in _HOLLOW
+
+
+class _LiveSpeaker:
+    """Speaks the agent's final answer aloud while it is still being generated: each completed
+    sentence is synthesized and handed to the host's serialized player (the first clip flushes any
+    stale audio), in order, on a background worker so token streaming never blocks. This is what
+    makes the voice lead the text instead of trailing it."""
+
+    def __init__(self, on_progress: Progress = None) -> None:
+        self._buf = ""
+        self._q: "asyncio.Queue[str | None]" = asyncio.Queue()
+        self._first = True
+        self._spoke = False
+        self._on_progress = on_progress
+        self._task = asyncio.create_task(self._run())
+
+    def feed(self, delta: str) -> None:
+        """Take newly-revealed final-answer text; queue any now-complete sentence(s) for playback."""
+        self._buf += delta
+        m = _LIVE_SENTENCES.match(self._buf)
+        if m:
+            ready, self._buf = m.group(1).strip(), m.group(2)
+            if ready:
+                self._q.put_nowait(ready)
+
+    async def _run(self) -> None:
+        while True:
+            sentence = await self._q.get()
+            try:
+                if sentence is None:
+                    return
+                wav = await _render(sentence)
+                if wav:
+                    if not self._spoke:
+                        await _emit(self._on_progress, "speaking", "Speaking…")
+                    if await host_client.play_audio(wav, flush=self._first):
+                        self._first = False
+                        self._spoke = True
+            except Exception as e:  # noqa: BLE001 - one bad sentence must never break the stream
+                log.warning("live speak sentence failed: %s", e)
+            finally:
+                self._q.task_done()
+
+    async def finish(self) -> bool:
+        """Flush the trailing partial sentence, wait for playback to drain, and report whether
+        anything was spoken (so the caller doesn't voice the reply a second time)."""
+        tail = self._buf.strip()
+        self._buf = ""
+        if tail:
+            self._q.put_nowait(tail)
+        self._q.put_nowait(None)
+        try:
+            await self._task
+        except Exception:  # noqa: BLE001
+            pass
+        return self._spoke
+
+    async def cancel(self) -> None:
+        """Abandon this speaker — the step turned out not to be a final answer. Normally an idle
+        no-op (nothing was fed unless a final was streaming)."""
+        self._task.cancel()
+        try:
+            await self._task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
+
+
 async def handle(text: str, *, transcript: str | None = None,
                  clarify: "Clarification | None" = None, session: str | None = None,
                  on_progress: Progress = None, on_answer: "Answer" = None) -> CommandResult:
@@ -192,7 +282,12 @@ async def _handle(text: str, *, transcript: str | None = None,
     for turn in context:
         if turn.get("content"):
             messages.append({"role": turn.get("role", "user"), "content": turn["content"]})
-    messages.append({"role": "user", "content": text})
+    # Hand the agent the REFINED request, not the raw speech-to-text — the understand pass has
+    # already cleaned the noise, resolved "it/that", and sharpened the wording, so no garbled
+    # input reaches the agent's reasoning. Falls back to the raw text when refinement was off or
+    # added nothing. (The raw transcript is still what we log and show in history.)
+    agent_request = (intent.refined_request if intent and intent.refined_request else text)
+    messages.append({"role": "user", "content": agent_request})
     # Resuming after the user answered a multiple-choice question: replay the question we
     # asked and their answer so the loop continues with that decision settled.
     if clarify:
@@ -202,7 +297,9 @@ async def _handle(text: str, *, transcript: str | None = None,
 
     trace: dict = {"skill": None}
     state = AgentState(goal=(intent.goal if intent else text),
-                       success_criteria=(intent.success_criteria if intent else []))
+                       success_criteria=(intent.success_criteria if intent else []),
+                       plan=(intent.plan if intent else []),
+                       requires_action=(intent.requires_action if intent else False))
     result = await _loop(messages, transcript, on_progress, trace=trace, state=state,
                          on_answer=on_answer)
     if result.skill is None:
@@ -240,17 +337,27 @@ async def _loop(messages: list[dict], transcript: str | None, on_progress: Progr
         # extractor that surfaces only the final-answer text (tool-call steps reveal nothing).
         await _answer(on_answer, "reset")
         streamer = _FinalStreamer()
+        # Speak the answer ALOUD as it streams — sentence by sentence, while the model is still
+        # generating — so the voice leads rather than trailing the text. Only for replies that will
+        # be accepted unchanged (no required action, nothing acted-on yet → neither the
+        # anti-fabrication gate nor verify can send this step back), so we never voice a draft that
+        # later gets revised. The host's serialized queue keeps clips in order and non-overlapping.
+        live = _LiveSpeaker(on_progress) if _live_speech_ok(state, s) else None
 
-        async def _tok(delta: str, _s: "_FinalStreamer" = streamer) -> None:
+        async def _tok(delta: str, _s: "_FinalStreamer" = streamer, _live=live) -> None:
             piece = _s.feed(delta)
             if piece:
                 await _answer(on_answer, "delta", piece)
+                if _live is not None:
+                    _live.feed(piece)
 
         try:
             content = await llm.complete(messages, json_mode=True,
-                                         on_token=_tok if on_answer else None)
+                                         on_token=_tok if (on_answer or live) else None)
         except Exception as e:  # noqa: BLE001
             log.warning("agent step failed: %s", e)
+            if live is not None:
+                await live.cancel()
             state.stop_reason = StopReason.LLM_ERROR
             # Silent on the speakers (status=error); detailed text + `detail` is what the
             # web client renders so the user can act on the real problem.
@@ -261,8 +368,34 @@ async def _loop(messages: list[dict], transcript: str | None, on_progress: Progr
             ), on_progress)
 
         obj = _parse(content)
+        # Decide what becomes of the live speaker now that the step's output is in: if this turn is
+        # a final answer, drain it (and remember we already voiced the reply); otherwise it was a
+        # tool/choice step that streamed no answer text, so cancel the idle speaker.
+        prespoken = False
+        if live is not None:
+            if _concludes(obj, content):
+                prespoken = await live.finish()
+            else:
+                await live.cancel()
         if not isinstance(obj, dict):
-            return await _finish(_done(transcript, content or "Done."), on_progress)
+            # The model returned plain text instead of the JSON envelope. If it's a substantive
+            # answer, the model simply forgot to wrap it — accept it as the spoken reply. But a
+            # blank or hollow "done"/"ok" with nothing behind it is a FAILED step, not success:
+            # never let that masquerade as a finished task. Nudge for a real reply and loop.
+            answer = (content or "").strip()
+            if len(answer) >= 3 and answer.lower().strip(" .!") not in _HOLLOW:
+                # Route through _conclude, not straight to done, so the same anti-fabrication and
+                # verify gates apply to a prose "I've locked it" as to a JSON {"final"}.
+                concluded = await _conclude(state, transcript, answer, messages, on_progress,
+                                            already_spoken=prespoken)
+                if concluded is not None:
+                    return concluded
+                continue
+            messages.append({"role": "assistant", "content": content or ""})
+            messages.append({"role": "user", "content": "Reply with one valid JSON object — a tool "
+                             "call to make real progress, a choice, or a genuine {\"final\":\"...\"} "
+                             "answer. Do not reply with a bare 'done'/'ok' that did nothing."})
+            continue
 
         # ReAct scratchpad: a private 'thought' may accompany any turn — log it, never speak it.
         thought = obj.get("thought")
@@ -288,7 +421,8 @@ async def _loop(messages: list[dict], transcript: str | None, on_progress: Progr
         # ---- the model wants to finish: verify the goal before we accept it ----
         if "final" in obj:
             draft = (obj.get("final") or (obj.get("params") or {}).get("text") or "").strip() or FALLBACK_REPLY
-            concluded = await _conclude(state, transcript, draft, messages, on_progress)
+            concluded = await _conclude(state, transcript, draft, messages, on_progress,
+                                        already_spoken=prespoken)
             if concluded is not None:
                 return concluded
             continue  # verification sent us back to fix something
@@ -310,7 +444,8 @@ async def _loop(messages: list[dict], transcript: str | None, on_progress: Progr
                  {k: v for k, v in params.items() if "password" not in k})
         if tool in ("answer", "final", "reply", "respond"):
             draft = (params.get("text") or "").strip() or FALLBACK_REPLY
-            concluded = await _conclude(state, transcript, draft, messages, on_progress)
+            concluded = await _conclude(state, transcript, draft, messages, on_progress,
+                                        already_spoken=prespoken)
             if concluded is not None:
                 return concluded
             continue
@@ -418,16 +553,19 @@ def _evidence(messages: list[dict]) -> str:
 async def _maybe_verify(state: AgentState, draft: str, messages: list[dict],
                         on_progress: Progress) -> str | None:
     """The verify gate. Returns the final text to finish with, or None to keep iterating (a fix
-    instruction has been appended to `messages`). Only runs when the agent actually CHANGED
-    something toward a goal with success criteria; otherwise it's a no-op pass-through."""
+    instruction has been appended to `messages`). Runs when there are success criteria AND either
+    the agent CHANGED something, or the request REQUIRED an action — the latter so a fabricated
+    "done" (a tool that failed, or a claim with no successful action) is caught, not just a
+    mis-done one. Pure questions (no required action, nothing changed) skip it as a no-op."""
     s = get_settings()
-    if not (s.verify_actions and state.success_criteria and state.acted):
+    if not (s.verify_actions and state.success_criteria and (state.acted or state.requires_action)):
         return draft
     if state.verify_attempts >= MAX_VERIFY:
         return draft  # verified/fixed enough times — finish with the honest draft
     state.phase = Phase.VERIFY
     await _emit(on_progress, "reviewing", "Verifying the result…")
-    verdict = await verify.verify_goal(state.goal, state.success_criteria, _evidence(messages), draft)
+    verdict = await verify.verify_goal(state.goal, state.success_criteria, _evidence(messages),
+                                       draft, plan=state.plan)
     if verdict.met:
         return draft
     state.verify_attempts += 1
@@ -440,14 +578,32 @@ async def _maybe_verify(state: AgentState, draft: str, messages: list[dict],
 
 
 async def _conclude(state: AgentState, transcript: str | None, draft: str, messages: list[dict],
-                    on_progress: Progress) -> "CommandResult | None":
-    """Run the verify gate and either finalize (return a CommandResult) or signal iterate (None)."""
+                    on_progress: Progress, *, already_spoken: bool = False) -> "CommandResult | None":
+    """Decide whether to finalize. Two gates stand between the model and a "done":
+    1. Anti-fabrication: a request that REQUIRES doing something is never "done" until a tool has
+       actually run and returned ok. This is the fix for "it said done but did nothing" — the model
+       cannot rubber-stamp completion it never performed.
+    2. Verify: once it HAS acted, the success criteria are checked against the real observations.
+    Returns a CommandResult to finish, or None to keep iterating (an instruction was appended)."""
+    blatant = state.requires_action and not state.acted and not state.last_calls
+    if blatant and state.action_pushbacks < MAX_ACTION_PUSHBACKS:
+        state.action_pushbacks += 1
+        log.info("anti-fabrication: refusing 'done' with no tool called at all (pushback %d/%d).",
+                 state.action_pushbacks, MAX_ACTION_PUSHBACKS)
+        await _emit(on_progress, "thinking", "Making sure it actually happens…")
+        messages.append({"role": "assistant", "content": json.dumps({"final": draft})})
+        messages.append({"role": "user", "content":
+            "Hold on — this request needs you to actually DO something, and so far no tool has run "
+            "and returned ok. The task is NOT complete; do not claim it is. Call the tool that "
+            "performs the action now and read its OBSERVATION. If you genuinely cannot (a tool "
+            "failed or isn't available here), say so plainly — never report success you didn't achieve."})
+        return None
     final_text = await _maybe_verify(state, draft, messages, on_progress)
     if final_text is None:
         return None
     state.phase = Phase.DONE
     state.stop_reason = StopReason.VERIFIED_DONE if state.acted else StopReason.ANSWERED
-    return await _finish(_done(transcript, final_text), on_progress)
+    return await _finish(_done(transcript, final_text), on_progress, already_spoken=already_spoken)
 
 
 async def execute_approved(skill: str, params: dict[str, Any], *, transcript: str | None = None,
@@ -506,14 +662,21 @@ async def _ask_choice(transcript: str | None, question: str, options: list[str],
     return await _finish(result, on_progress)  # speak the question on the host too
 
 
-async def _finish(result: CommandResult, on_progress: Progress = None) -> CommandResult:
+async def _finish(result: CommandResult, on_progress: Progress = None, *,
+                  already_spoken: bool = False) -> CommandResult:
     """Finalize a result: speak it on the host only when it's a real, successful reply
     from the agent. Errors and blocked actions are sent to the web client with full detail
-    but never voiced — sound is for things Aether wants to say, not for problems."""
+    but never voiced — sound is for things Aether wants to say, not for problems.
+    `already_spoken` is set when the live speaker already voiced the reply as it streamed, so we
+    mark it spoken without rendering it a second time."""
     s = get_settings()
-    if s.speak_on_host and _should_speak(result):
-        await _emit(on_progress, "speaking", "Speaking…")
-        result.spoken = await _speak(result.summary)
+    if not (s.speak_on_host and _should_speak(result)):
+        return result
+    if already_spoken:
+        result.spoken = True
+        return result
+    await _emit(on_progress, "speaking", "Speaking…")
+    result.spoken = await _speak(result.summary)
     return result
 
 
@@ -536,18 +699,49 @@ async def _render(text: str) -> bytes:
 
 
 async def _speak(text: str) -> bool:
-    """Synthesize and play `text` on the host as one piece. tts.synthesize already drops or
-    ASCII-fixes chunks it can't voice, so a non-empty reply almost always yields some audio. If
-    even that came back empty, try a second pass on a hand-stripped version of the SAME answer so
-    the user still hears the real reply, slightly degraded; only as a last resort speak a short
-    in-character recovery line — and NEVER one that claims the answer is 'on screen' (the user may
-    be on voice with no UI in view) or that the agent 'can't pronounce' it.
+    """Speak `text` on the host. When streaming is enabled, say it sentence-by-sentence so the
+    speakers start almost at once; otherwise (or if streaming yields nothing) render and play the
+    whole reply in one piece. Either way the host plays clips serially through one queue, so a
+    reply is never spoken twice or over itself."""
+    if get_settings().tts_stream:
+        try:
+            if await _speak_stream(text):
+                return True
+            log.info("speak: streaming produced no audio; falling back to whole-reply.")
+        except Exception as e:  # noqa: BLE001
+            log.warning("speak: streaming path raised (%s); falling back to whole-reply.", e)
+    return await _speak_whole(text)
 
-    (Deliberately NOT sentence-streamed: per-sentence playback produced choppy/garbled speech on
-    the host, so we render the whole reply and play it once — reliable beats marginally faster.)"""
+
+async def _speak_stream(text: str) -> bool:
+    """Low-latency speech: split the reply at sentence boundaries and stream each clip to the
+    host's serialized player as it renders, so the first words play while the rest synthesize.
+    The first clip carries flush=True so this reply supersedes any stale audio. Returns True if
+    any clip played, False to let the caller fall back to whole-reply rendering."""
+    chunks = tts._chunk(tts._speakable(text or ""))
+    if not chunks:
+        return False
+    log.info("speak(stream): %d clip(s), preview=%r", len(chunks), (text or "")[:80])
+    played = False
+    for chunk in chunks:
+        wav = await _render(chunk)
+        if not wav:
+            continue
+        if await host_client.play_audio(wav, flush=(not played)):  # first real clip clears stale audio
+            played = True
+    return played
+
+
+async def _speak_whole(text: str) -> bool:
+    """Render the whole reply and play it as one piece. tts.synthesize already drops or ASCII-fixes
+    chunks it can't voice, so a non-empty reply almost always yields some audio. If even that comes
+    back empty, retry on a hand-stripped version of the SAME answer so the user still hears the real
+    reply, slightly degraded; only as a last resort speak a short in-character recovery line — and
+    NEVER one that claims the answer is 'on screen' (the user may be on voice with no UI in view)
+    or that the agent 'can't pronounce' it. The first play flushes any stale audio."""
     log.info("speak: attempting (len=%d, preview=%r).", len(text or ""), (text or "")[:80])
     try:
-        if await host_client.play_audio(await _render(text)):
+        if await host_client.play_audio(await _render(text), flush=True):
             log.info("speak: primary path played successfully.")
             return True
         log.warning("speak: primary path yielded no audio; retrying with stripped version.")
@@ -557,7 +751,7 @@ async def _speak(text: str) -> bool:
     # Second pass: strip the SAME reply down to plain ASCII so the user still hears it.
     try:
         stripped = tts._ascii_fallback(tts._speakable(text or ""))
-        if stripped and await host_client.play_audio(await _render(stripped)):
+        if stripped and await host_client.play_audio(await _render(stripped), flush=True):
             return True
     except Exception as e:  # noqa: BLE001
         log.warning("TTS stripped retry failed: %s", e)
@@ -565,7 +759,7 @@ async def _speak(text: str) -> bool:
     # Last resort: a short, in-character recovery line. Don't blame the content.
     try:
         return await host_client.play_audio(await _render(
-            "Forgive me, sir — my voice is briefly out of order. Do try again in a moment."))
+            "Forgive me, sir — my voice is briefly out of order. Do try again in a moment."), flush=True)
     except Exception as e:  # noqa: BLE001
         log.warning("TTS final fallback also failed: %s", e)
         return False

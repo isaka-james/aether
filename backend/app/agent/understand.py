@@ -23,6 +23,9 @@ class Intent:
     goal: str                                   # one clear sentence: what to achieve
     refined_request: str                        # the cleaned-up request, in the user's voice
     success_criteria: list[str] = field(default_factory=list)   # observable "done" conditions
+    plan: list[str] = field(default_factory=list)               # rough steps for a multi-step goal
+    requires_action: bool = False               # True when fulfilling this CHANGES the machine's
+                                                # state (must call a tool) vs. merely answering
     ambiguous: bool = False                     # True only when we truly can't proceed
     question: str = ""                          # if ambiguous: what to ask
     options: list[str] = field(default_factory=list)            # if ambiguous: 2-4 concrete choices
@@ -61,14 +64,16 @@ async def refine_request(text: str, context: list[dict] | None = None) -> Intent
         goal = str(obj.get("goal") or "").strip() or raw
         refined = str(obj.get("refined_request") or "").strip() or raw
         criteria = [str(c).strip() for c in (obj.get("success_criteria") or []) if str(c).strip()]
+        plan = [str(p).strip() for p in (obj.get("plan") or []) if str(p).strip()]
         options = [str(o).strip() for o in (obj.get("options") or []) if str(o).strip()]
         # Only treat as ambiguous when there's a real, answerable fork (a question + 2+ options).
         ambiguous = bool(obj.get("ambiguous")) and bool(str(obj.get("question") or "").strip()) and len(options) >= 2
         intent = Intent(goal=goal, refined_request=refined, success_criteria=criteria[:5],
+                        plan=plan[:6], requires_action=bool(obj.get("requires_action")),
                         ambiguous=ambiguous, question=str(obj.get("question") or "").strip(),
                         options=options[:4])
-        log.info("refined: goal=%r criteria=%d ambiguous=%s", intent.goal[:120],
-                 len(intent.success_criteria), intent.ambiguous)
+        log.info("refined: goal=%r criteria=%d plan=%d action=%s ambiguous=%s", intent.goal[:120],
+                 len(intent.success_criteria), len(intent.plan), intent.requires_action, intent.ambiguous)
         return intent
     except Exception as e:  # noqa: BLE001
         log.warning("refine_request failed (%s) — using raw text as goal.", e)
@@ -76,11 +81,17 @@ async def refine_request(text: str, context: list[dict] | None = None) -> Intent
 
 
 def objective_note(intent: Intent, raw: str) -> str:
-    """A compact system note injecting the refined goal + success criteria into the loop, or "" if
-    the refinement added nothing over the raw request."""
-    if not intent.success_criteria and intent.goal.strip().lower() == raw.strip().lower():
+    """A compact system note injecting the refined goal + plan + success criteria into the loop, or
+    "" if the refinement added nothing over the raw request."""
+    has_plan = len(intent.plan) >= 2   # a single-step "plan" is noise, not a plan
+    if (not intent.success_criteria and not has_plan
+            and intent.goal.strip().lower() == raw.strip().lower()):
         return ""
     note = f"Refined objective for this request: {intent.goal}"
+    if has_plan:
+        # Only inject a plan for genuinely multi-step work — a single-step request needs no ceremony.
+        note += "\nA workable plan (adapt it as observations come in; don't follow it blindly): " + \
+                " → ".join(intent.plan)
     if intent.success_criteria:
         note += "\nSuccess criteria (the request is only done when ALL hold): " + \
                 "; ".join(f"({i+1}) {c}" for i, c in enumerate(intent.success_criteria))

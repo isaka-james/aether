@@ -28,6 +28,21 @@ def test_objective_note_lists_numbered_success_criteria():
     assert "the default source is muted" in note
 
 
+def test_objective_note_includes_multi_step_plan():
+    intent = Intent(goal="quiet the music then play jazz", refined_request="...",
+                    plan=["stop the current music", "play jazz on youtube"])
+    note = objective_note(intent, "music stuff")
+    assert "plan" in note.lower()
+    assert "play jazz on youtube" in note
+
+
+def test_objective_note_omits_single_step_plan():
+    # A one-step plan is noise — don't inject it.
+    intent = Intent(goal="lock the screen", refined_request="lock the screen",
+                    plan=["lock the screen"])
+    assert objective_note(intent, "lock the screen") == ""
+
+
 def test_format_context_renders_recent_turns():
     ctx = [
         {"role": "user", "content": "play some jazz"},
