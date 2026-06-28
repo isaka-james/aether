@@ -33,10 +33,10 @@ log "Package manager: $PM. Desktop: ${DE:-unknown}."
 # generic screen lock and open-link; libgtk/gtk3 gives gtk-launch for opening apps by name;
 # fswebcam gives the webcam photo; wl-clipboard/xclip give clipboard read and copy.
 case "$PM" in
-  apt)    UNIVERSAL="pulseaudio-utils libnotify-bin network-manager bluez playerctl brightnessctl wmctrl xdotool xinput power-profiles-daemon scrot xdg-utils libgtk-3-bin fswebcam wl-clipboard xclip";;
-  dnf)    UNIVERSAL="pulseaudio-utils libnotify NetworkManager bluez playerctl brightnessctl wmctrl xdotool xinput power-profiles-daemon scrot xdg-utils gtk3 fswebcam wl-clipboard xclip";;
-  pacman) UNIVERSAL="libpulse libnotify networkmanager bluez-utils playerctl brightnessctl wmctrl xdotool xorg-xinput power-profiles-daemon scrot xdg-utils gtk3 fswebcam wl-clipboard xclip";;
-  zypper) UNIVERSAL="pulseaudio-utils libnotify-tools NetworkManager bluez playerctl brightnessctl wmctrl xdotool xinput power-profiles-daemon scrot xdg-utils gtk3-tools fswebcam wl-clipboard xclip";;
+  apt)    UNIVERSAL="pulseaudio-utils libnotify-bin network-manager bluez playerctl brightnessctl wmctrl xdotool xinput power-profiles-daemon scrot xdg-utils libgtk-3-bin fswebcam wl-clipboard xclip tesseract-ocr man-db";;
+  dnf)    UNIVERSAL="pulseaudio-utils libnotify NetworkManager bluez playerctl brightnessctl wmctrl xdotool xinput power-profiles-daemon scrot xdg-utils gtk3 fswebcam wl-clipboard xclip tesseract man-db";;
+  pacman) UNIVERSAL="libpulse libnotify networkmanager bluez-utils playerctl brightnessctl wmctrl xdotool xorg-xinput power-profiles-daemon scrot xdg-utils gtk3 fswebcam wl-clipboard xclip tesseract tesseract-data-eng man-db";;
+  zypper) UNIVERSAL="pulseaudio-utils libnotify-tools NetworkManager bluez playerctl brightnessctl wmctrl xdotool xinput power-profiles-daemon scrot xdg-utils gtk3-tools fswebcam wl-clipboard xclip tesseract-ocr man-db";;
 esac
 
 # Desktop-specific extras (mostly the screenshot tool; qdbus for KDE's own controls).

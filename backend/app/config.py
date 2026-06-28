@@ -106,6 +106,10 @@ class Settings(BaseSettings):
 
     # --- Behavior ---
     speak_on_host: bool = True   # play TTS through the host speakers
+    # Stream speech sentence-by-sentence so the speakers start almost immediately (each sentence is
+    # synthesized and sent to the host's serialized player while the next one renders), instead of
+    # waiting for the whole reply to synthesize. Off = render the whole reply, then play it once.
+    tts_stream: bool = True
     require_confirm_medium_risk: bool = True
     enable_review: bool = True   # second AI pass: review the result and report the real outcome
 

@@ -25,12 +25,14 @@ class Verdict:
     fix_hint: str = ""
 
 
-async def verify_goal(goal: str, criteria: list[str], evidence: str, draft_reply: str) -> Verdict:
-    """Judge whether `criteria` hold given `evidence`. Never raises — defaults to met=True."""
+async def verify_goal(goal: str, criteria: list[str], evidence: str, draft_reply: str,
+                      plan: list[str] | None = None) -> Verdict:
+    """Judge whether the goal was actually achieved given `evidence` — criteria met, planned steps
+    carried out, and the reply honest and complete. Never raises — defaults to met=True."""
     s = get_settings()
     if not s.verify_actions or not criteria:
         return Verdict(True)
-    ctx = {"goal": goal, "success_criteria": criteria,
+    ctx = {"goal": goal, "plan": plan or [], "success_criteria": criteria,
            "evidence": evidence, "draft_reply": draft_reply}
     try:
         out = await llm.complete(

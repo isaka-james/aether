@@ -11,7 +11,7 @@ import os
 import platform
 import socket
 
-from ._util import QDBUS, fail, has, ok
+from ._util import QDBUS, fail, has, ok, run
 from .registry import skill
 
 
@@ -68,6 +68,8 @@ def probe() -> dict:
         "brightness": has("brightnessctl") or _has_backlight() or has(QDBUS),
         "screenshot": _any("spectacle", "gnome-screenshot", "xfce4-screenshooter", "grim",
                            "scrot", "maim", "import"),
+        "ocr": has("tesseract"),
+        "do_not_disturb": _any("kwriteconfig6", "gsettings"),
         "windows": _any("wmctrl", QDBUS),
         "keyboard_input": _any("ydotool", "xdotool"),
         "input_devices": has("xinput"),
@@ -98,29 +100,89 @@ def capabilities(_):
     return ok(summary, capabilities=caps, machine=m, available=working, unavailable=missing)
 
 
-@skill("find_tool")
-def find_tool(params):
-    """Search the installed programs for ones whose name contains `query`. Lets the agent
-    discover a tool before using it (e.g. find_tool 'pdf' to see what can handle PDFs)."""
-    q = str(params.get("query", "")).strip().lower()
-    if not q:
-        return fail("What kind of tool are you looking for?")
-    seen: set[str] = set()
-    matches: list[str] = []
+def _path_executables() -> "set[str]":
+    """Every executable name on PATH (used to keep discovery to things actually installed)."""
+    names: set[str] = set()
     for d in (os.environ.get("PATH") or "/usr/bin:/bin").split(os.pathsep):
         try:
             entries = os.listdir(d)
         except OSError:
             continue
         for name in entries:
-            if q in name.lower() and name not in seen:
-                p = os.path.join(d, name)
+            p = os.path.join(d, name)
+            try:
                 if not os.path.isdir(p) and os.access(p, os.X_OK):
-                    seen.add(name)
-                    matches.append(name)
-    matches.sort()
-    if not matches:
-        return ok(f"No installed program matches '{q}'.", matches=[], query=q)
-    head = ", ".join(matches[:30]) + ("…" if len(matches) > 30 else "")
-    return ok(f"{len(matches)} installed program(s) matching '{q}': {head}",
-              matches=matches[:60], query=q)
+                    names.add(name)
+            except OSError:
+                continue
+    return names
+
+
+def _by_name(q: str, execs: "set[str]") -> list[str]:
+    """Installed executables whose filename contains the query."""
+    return sorted(n for n in execs if q in n.lower())
+
+
+def _by_purpose(q: str, execs: "set[str]") -> list[str]:
+    """Installed programs whose man-page description mentions the query (so 'find a tool that does
+    X' works even when the program isn't named after X). Empty if apropos/man-db isn't present."""
+    if not has("apropos"):
+        return []
+    rc, out, _ = run(["apropos", "--", q], timeout=8)
+    if rc != 0 or not out:
+        return []
+    found: list[str] = []
+    for line in out.splitlines():
+        # "name (section) - description" — possibly "name1, name2 (1) - ..."
+        head = line.split(" - ", 1)[0]
+        for token in head.split("(", 1)[0].split(","):
+            name = token.strip()
+            if name and name in execs and name not in found:
+                found.append(name)
+    return found
+
+
+def _describe(names: list[str]) -> dict[str, str]:
+    """One-line descriptions for `names` from `whatis` (man-page summaries). Best-effort: missing
+    man-db just yields no descriptions, and the names are still returned."""
+    if not names or not has("whatis"):
+        return {}
+    rc, out, _ = run(["whatis", "--"] + names, timeout=8)
+    if rc != 0 or not out:
+        return {}
+    desc: dict[str, str] = {}
+    for line in out.splitlines():
+        if " - " not in line:
+            continue
+        head, summary = line.split(" - ", 1)
+        for token in head.split("(", 1)[0].split(","):
+            name = token.strip()
+            if name and name not in desc:
+                desc[name] = summary.strip()
+    return desc
+
+
+@skill("find_tool")
+def find_tool(params):
+    """Discover an installed program for a need — by name AND by what it does. Searches PATH for
+    executables whose name contains `query`, plus (via apropos) programs whose man-page description
+    mentions it, then annotates each with a one-line summary (via whatis). So find_tool 'pdf' turns
+    up not just 'pdfunite' but things like 'qpdf — PDF transformation software', and the agent can
+    pick the right one and know how to use it before running it."""
+    q = str(params.get("query", "")).strip().lower()
+    if not q:
+        return fail("What kind of tool are you looking for?")
+    execs = _path_executables()
+    ordered: list[str] = []
+    for name in _by_name(q, execs) + _by_purpose(q, execs):   # name matches first, then purpose
+        if name not in ordered:
+            ordered.append(name)
+    if not ordered:
+        return ok(f"No installed program matches '{q}' by name or description.", matches=[],
+                  tools=[], query=q)
+    descs = _describe(ordered[:25])
+    tools = [{"name": n, "description": descs.get(n, "")} for n in ordered[:60]]
+    head = "; ".join(f"{t['name']} — {t['description']}" if t["description"] else t["name"]
+                     for t in tools[:12]) + ("…" if len(ordered) > 12 else "")
+    return ok(f"{len(ordered)} program(s) matching '{q}': {head}",
+              matches=ordered[:60], tools=tools, query=q)

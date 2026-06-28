@@ -140,6 +140,10 @@ SKILLS: list[Skill] = [
     Skill("brightness", "Set screen brightness.", '{"level": 0-100}', SCREEN,
           ("dim the screen", "set brightness to 50")),
     Skill("screenshot", "Take a full-screen screenshot.", "none", SCREEN, ("take a screenshot",)),
+    Skill("read_screen", "OCR the screen — capture it and read back the visible text. Use to "
+                         "actually SEE what's on screen and answer about it: an error dialog, a "
+                         "webpage, a code snippet, 'what does this say', 'read the screen to me'.",
+          "none", SCREEN, ("what does the screen say", "read this error", "read the screen")),
     Skill("lock_screen", "Lock the screen.", "none", SCREEN, ("lock the screen",)),
     Skill("unlock_screen", "Unlock the screen / dismiss the lock screen.", "none", SCREEN,
           ("unlock the screen",)),
@@ -192,6 +196,11 @@ SKILLS: list[Skill] = [
           ("did I miss anything", "read my notifications")),
     Skill("clear_notifications", "Forget all the notifications the agent has recorded so far.",
           "none", INFO, ("clear my notifications",)),
+    Skill("set_dnd", "Turn Do Not Disturb (notification silence) on or off. Use for 'do not "
+                     "disturb', 'silence notifications', 'mute notifications', 'stop interrupting "
+                     "me', and turning it back off.",
+          '{"state": "on|off"}', INFO,
+          ("turn on do not disturb", "silence notifications", "turn off do not disturb")),
     Skill("notify", "Show a desktop notification.", '{"message": "text"}', INFO,
           ("remind me on screen to stretch",)),
     Skill("set_timer", "Set a countdown timer or a reminder. When it elapses Aether announces it "
@@ -239,9 +248,13 @@ SKILLS: list[Skill] = [
     Skill("capabilities", "List what actions actually work on this machine right now (which "
                           "tools are installed). Use when unsure whether something is supported here.",
           "none", DISCOVERY, ("what can you do on this machine",)),
-    Skill("find_tool", "Search the installed programs for ones matching a keyword, to discover a "
-                       "tool before using it (e.g. 'pdf', 'screenshot', 'convert').",
-          '{"query": "pdf"}', DISCOVERY, ("do I have something for pdfs", "find a screenshot tool")),
+    Skill("find_tool", "Discover an installed program for a need — by name AND by what it does. "
+                       "Finds executables whose name matches the keyword plus ones whose man-page "
+                       "description mentions it, each annotated with a one-line summary, so you can "
+                       "pick the right one and know how to use it before running it via run_command. "
+                       "Use whenever no named skill fits (e.g. 'pdf', 'ocr', 'convert', 'qr code').",
+          '{"query": "pdf"}', DISCOVERY, ("do I have something for pdfs", "find a screenshot tool",
+           "is there a tool to edit images", "what can read a qr code")),
     Skill("find_files", "Search the user's files by name (home folder by default).",
           '{"query": "resume"}  (+ optional "dir": "~/Documents")', DISCOVERY,
           ("find my resume", "where's my budget spreadsheet")),

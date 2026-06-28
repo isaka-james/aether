@@ -333,6 +333,15 @@ function showApp() {
   setMode("idle"); connectWs(); loadSuggestions();
   micState().then((s) => { if (s === "granted") state.micGranted = true; });
 }
+// Stop any in-progress browser speech the moment the tab is hidden, so a half-spoken reply can't
+// resume or replay when the device is unlocked or the tab is refocused (the host voice is the
+// primary channel; this fallback should never blurt out stale audio later).
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && "speechSynthesis" in window) {
+    try { window.speechSynthesis.cancel(); } catch (e) { /* ignore */ }
+  }
+});
+
 if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
 if (state.token) showApp(); else { $("login").classList.remove("hidden"); $("app").classList.add("hidden"); }
 
