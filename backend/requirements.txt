@@ -8,7 +8,7 @@ httpx==0.28.1
 # Range pins: both SDKs keep a stable surface within these bounds, so a fresh
 # build picks up patches without breaking. openai also serves DeepSeek + any
 # local/OpenAI-compatible server; anthropic serves Claude.
-openai>=2.43,<3
+openai>=2.44.0,<3
 anthropic>=0.111,<1
 
 faster-whisper==1.2.1
