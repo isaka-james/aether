@@ -9,7 +9,7 @@ httpx==0.28.1
 # build picks up patches without breaking. openai also serves DeepSeek + any
 # local/OpenAI-compatible server; anthropic serves Claude.
 openai>=2.43,<3
-anthropic>=0.111,<1
+anthropic>=0.113.0,<1
 
 faster-whisper==1.2.1
 requests==2.34.2                 # security: .netrc leak + later CVEs fixed
